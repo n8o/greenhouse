@@ -1,0 +1,38 @@
+# greenhouse.toml — how greenhouse runs a plan on a repo (docs/DESIGN.md).
+# This one runs greenhouse's own bootstrap plan, .beads/plans/gr-boot.jsonl.
+
+# Repository to work on; a relative path is resolved against this file.
+repo = "."
+# Beads whose ID is "<plan_prefix>-<n>" make up the plan.
+plan_prefix = "gr-boot"
+
+[wip]
+implement = 1 # concurrent implement sessions
+open_prs = 3  # open agent PRs; no new implement launch at or above this
+
+[quota] # fractions of each Claude usage window (ADR-0002)
+five_hour_max = 0.8 # launch only while 5-hour usage is below this
+weekly_share = 0.5  # launch only while 7-day usage is below this
+
+[verify] # deterministic checks on a PR branch, run in order (ADR-0004)
+commands = [
+  "go build ./...",
+  "go test ./...",
+  "go vet ./...",
+  "test -z \"$(gofmt -l .)\"",
+  "nugit pr-render -base main -head HEAD -fail-on fail",
+]
+
+# Model and turn budget of each LLM stage. verify is deterministic and review
+# is the human, so they have none.
+[stages.spec]
+model = "sonnet"
+max_turns = 20
+
+[stages.implement]
+model = "opus"
+max_turns = 80
+
+[stages.learn]
+model = "sonnet"
+max_turns = 15
