@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nugit": {
+      "command": "nugit",
+      "args": [
+        "mcp",
+        "-C",
+        "."
+      ]
+    }
+  }
+}

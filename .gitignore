@@ -1,0 +1,15 @@
+
+# nugit (rebuildable index + per-agent ephemeral memory)
+**/.nugit/.cache/
+.nugit-local/
+
+# greenhouse runtime state (ledger, tick lock)
+.greenhouse/
+# beads local database (plan JSONL under .beads/plans/ is the source of truth)
+.beads/embeddeddolt/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
