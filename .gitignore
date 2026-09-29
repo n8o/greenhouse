@@ -16,3 +16,6 @@
 
 # agent-deck session worktrees
 .worktrees/
+
+# built binary (go build ./... at the root writes it)
+/greenhouse
