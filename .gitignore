@@ -13,3 +13,6 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# agent-deck session worktrees
+.worktrees/
