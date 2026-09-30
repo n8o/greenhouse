@@ -15,14 +15,17 @@ commands = ["go test ./..."]
 
 [stages.spec]
 model = "sonnet"
+effort = "medium"
 max_turns = 20
 
 [stages.implement]
 model = "opus"
+effort = "high"
 max_turns = 80
 
 [stages.learn]
 model = "sonnet"
+effort = "low"
 max_turns = 15
 `
 
@@ -64,7 +67,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Repo != filepath.Dir(path) {
 		t.Errorf("Repo = %q, want the config's directory %q", cfg.Repo, filepath.Dir(path))
 	}
-	if got := cfg.Stages["implement"]; got != (Stage{Model: "opus", MaxTurns: 80}) {
+	if got := cfg.Stages["implement"]; got != (Stage{Model: "opus", Effort: "high", MaxTurns: 80}) {
 		t.Errorf("stages.implement = %+v", got)
 	}
 }
@@ -81,6 +84,9 @@ func TestLoadRejects(t *testing.T) {
 		{"blank verify", strings.Replace(minimal, `"go test ./..."`, `" "`, 1), "verify.commands[0] is empty"},
 		{"missing stage", strings.Replace(minimal, "[stages.learn]", "[stages.other]", 1), "stages.learn is required"},
 		{"not an llm stage", minimal + "\n[stages.verify]\nmodel = \"x\"\nmax_turns = 1\n", "stages.verify: not an LLM stage"},
+		{"haiku has no auto mode", strings.Replace(minimal, `model = "opus"`, `model = "claude-haiku-4-5"`, 1), `stages.implement.model "claude-haiku-4-5" cannot run in auto mode`},
+		{"no effort", strings.Replace(minimal, "effort = \"medium\"\n", "", 1), `stages.spec.effort must be one of low, medium, high, xhigh, max, got ""`},
+		{"bad effort", strings.Replace(minimal, `effort = "high"`, `effort = "ultra"`, 1), `stages.implement.effort must be one of low, medium, high, xhigh, max, got "ultra"`},
 		{"no turns", strings.Replace(minimal, "max_turns = 20", "max_turns = 0", 1), "stages.spec.max_turns must be >= 1"},
 		{"bad toml", "plan_prefix = ", "config"},
 	}

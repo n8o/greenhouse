@@ -23,16 +23,21 @@ commands = [
   "nugit pr-render -base main -head HEAD -fail-on fail",
 ]
 
-# Model and turn budget of each LLM stage. verify is deterministic and review
-# is the human, so they have none.
+# Model, reasoning effort and turn budget of each LLM stage. verify is
+# deterministic and review is the human, so they have none. Model and effort
+# are always pinned: an unpinned session inherits the user's Claude Code
+# default, which may be the priciest model at the highest effort.
 [stages.spec]
 model = "sonnet"
+effort = "medium"
 max_turns = 20
 
 [stages.implement]
 model = "opus"
+effort = "high"
 max_turns = 80
 
 [stages.learn]
 model = "sonnet"
+effort = "low"
 max_turns = 15
