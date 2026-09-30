@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/n8o/greenhouse/internal/config"
+	"github.com/n8o/greenhouse/internal/doctor"
 	"github.com/n8o/greenhouse/internal/plan"
 )
 
@@ -28,7 +29,7 @@ func TestStatus(t *testing.T) {
 	}}
 	var cfg config.Config
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"status", "-config", repoConfig}, &stdout, &stderr, fakeSource(fake, &cfg))
+	code := run(context.Background(), []string{"status", "-config", repoConfig}, &stdout, &stderr, deps{source: fakeSource(fake, &cfg)})
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr.String())
 	}
@@ -68,9 +69,54 @@ func TestStatusErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), tt.args, &stdout, &stderr, fakeSource(tt.src, &cfg))
+			code := run(context.Background(), tt.args, &stdout, &stderr, deps{source: fakeSource(tt.src, &cfg)})
 			if code != tt.code || !strings.Contains(stderr.String(), tt.want) {
 				t.Errorf("exit %d stderr %q, want exit %d containing %q", code, stderr.String(), tt.code, tt.want)
+			}
+		})
+	}
+}
+
+// host is a doctor.Env where every check passes unless settings says
+// otherwise.
+func host(settings string) doctor.Env {
+	return doctor.Env{
+		ClaudeDir: "/home/u/.claude",
+		LookPath:  func(file string) (string, error) { return "/bin/" + file, nil },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+			switch name + " " + strings.Join(args, " ") {
+			case "agent-deck inbox writer-status --json":
+				return []byte(`{"running":true}`), nil, nil
+			case "nugit plan":
+				return nil, []byte("usage: nugit plan <check|normalize>"), errors.New("exit status 2")
+			}
+			return nil, nil, nil
+		},
+		ReadFile: func(string) ([]byte, error) { return []byte(settings), nil },
+	}
+}
+
+func TestDoctor(t *testing.T) {
+	wired := `{"statusLine":{"type":"command","command":"agent-deck usage ingest claude"}}`
+	tests := []struct {
+		name     string
+		args     []string
+		settings string
+		code     int
+		stdout   string
+		stderr   string
+	}{
+		{"all pass", []string{"doctor", "-config", repoConfig}, wired, 0, "PASS  statusline", ""},
+		{"statusLine unwired", []string{"doctor", "-config", repoConfig}, `{}`, 1, `"statusLine": {"type":"command","command":"agent-deck usage ingest claude"}`, ""},
+		{"missing config", []string{"doctor", "-config", "nope.toml"}, wired, 1, "FAIL  config", ""},
+		{"stray argument", []string{"doctor", "extra"}, wired, 2, "", "unexpected arguments"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), tt.args, &stdout, &stderr, deps{host: host(tt.settings)})
+			if code != tt.code || !strings.Contains(stdout.String(), tt.stdout) || !strings.Contains(stderr.String(), tt.stderr) {
+				t.Errorf("exit %d (want %d)\nstdout:\n%s\nstderr:\n%s", code, tt.code, stdout.String(), stderr.String())
 			}
 		})
 	}
