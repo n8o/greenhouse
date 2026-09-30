@@ -42,6 +42,8 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       cli -> ledger "records runs"
       config -> stage "names LLM stages"
       launch -> prompts "renders"
+      launch -> config "reads stage model/effort/turn budget"
+      launch -> stage "parses session results into events"
     }
 
     human -> sys "plans, reviews, merges"

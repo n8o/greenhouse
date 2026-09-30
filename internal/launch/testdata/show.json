@@ -1,0 +1,13 @@
+{
+  "auto_mode": true,
+  "claude_session_id": "c-1",
+  "effort": "low",
+  "hook_status": "waiting",
+  "id": "30cbb421-1",
+  "mcps": {"global": null, "local": ["nugit"], "project": null},
+  "model": "claude-haiku-4-5",
+  "status": "waiting",
+  "substate": "idle-at-empty-prompt",
+  "title": "gh-spec-x-1",
+  "transcript_ids": ["c-1"]
+}

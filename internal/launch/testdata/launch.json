@@ -1,0 +1,16 @@
+{
+  "auto_mode": true,
+  "claude_session_id": "c-1",
+  "command": "claude",
+  "effort": "low",
+  "group": "greenhouse",
+  "id": "30cbb421-1",
+  "message_pending": false,
+  "model": "claude-haiku-4-5",
+  "model_id": "claude-haiku-4-5",
+  "path": "/work/repo",
+  "status": "starting",
+  "success": true,
+  "title": "gh-spec-x-1",
+  "tool": "claude"
+}
