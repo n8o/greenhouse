@@ -40,6 +40,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       cli -> launch "starts stage sessions"
       cli -> verify "runs checks"
       cli -> ledger "records runs"
+      config -> stage "names LLM stages"
       launch -> prompts "renders"
     }
 

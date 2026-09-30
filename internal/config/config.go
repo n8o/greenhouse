@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/n8o/greenhouse/internal/stage"
 )
 
 // DefaultPath is the config file greenhouse reads when none is given.
@@ -19,7 +21,7 @@ const DefaultPath = "greenhouse.toml"
 
 // LLMStages are the stages that run a Claude session and so take a budget.
 // verify is deterministic and review is the human, so neither has one.
-var LLMStages = []string{"spec", "implement", "learn"}
+var LLMStages = []stage.Stage{stage.Spec, stage.Implement, stage.Learn}
 
 // Config is the parsed greenhouse.toml.
 type Config struct {
@@ -125,11 +127,12 @@ func (c Config) Validate() error {
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Stages)) {
-		if !slices.Contains(LLMStages, name) {
-			errs = append(errs, fmt.Errorf("stages.%s: not an LLM stage (want one of %s)", name, strings.Join(LLMStages, ", ")))
+		if !slices.Contains(LLMStages, stage.Stage(name)) {
+			errs = append(errs, fmt.Errorf("stages.%s: not an LLM stage (want one of %s)", name, llmStageList()))
 		}
 	}
-	for _, name := range LLMStages {
+	for _, st := range LLMStages {
+		name := string(st)
 		s, ok := c.Stages[name]
 		if !ok {
 			errs = append(errs, fmt.Errorf("stages.%s is required", name))
@@ -143,6 +146,14 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func llmStageList() string {
+	names := make([]string, len(LLMStages))
+	for i, s := range LLMStages {
+		names[i] = string(s)
+	}
+	return strings.Join(names, ", ")
 }
 
 func isFraction(f float64) bool { return f > 0 && f <= 1 }
