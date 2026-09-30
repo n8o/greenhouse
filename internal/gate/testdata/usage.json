@@ -1,0 +1,24 @@
+{
+  "providers": [
+    {
+      "id": "claude",
+      "label": "Claude",
+      "windows": [
+        {
+          "kind": "five_hour",
+          "label": "5h",
+          "used_percentage": 42.5,
+          "resets_at": 1790810000
+        },
+        {
+          "kind": "seven_day",
+          "label": "7d",
+          "used_percentage": 31,
+          "resets_at": 1791300000
+        }
+      ],
+      "updated_at": 1790800000,
+      "stale": false
+    }
+  ]
+}

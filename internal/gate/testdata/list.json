@@ -1,0 +1,12 @@
+[
+  {"id": "a1", "title": "gh-implement-gr-boot-7", "group": "greenhouse", "status": "running"},
+  {"id": "a2", "title": "gh-implement-gr-boot-8", "group": "greenhouse", "status": "waiting"},
+  {"id": "a3", "title": "gh-implement-gr-boot-9", "group": "greenhouse", "status": "starting"},
+  {"id": "a4", "title": "gh-implement-gr-boot-5", "group": "greenhouse", "status": "stopped"},
+  {"id": "a5", "title": "gh-implement-gr-boot-4", "group": "greenhouse", "status": "error"},
+  {"id": "a6", "title": "gh-implement-gr-boot-3", "group": "greenhouse", "status": "idle"},
+  {"id": "a7", "title": "gh-spec-gr-boot-10", "group": "greenhouse", "status": "running"},
+  {"id": "a8", "title": "gh-implement-gr-boot-11", "group": "my-sessions", "status": "running"},
+  {"id": "a9", "title": "gh-implement-gr-boot-12", "group": "greenhouse/sub", "status": "running"},
+  {"id": "b1", "title": "notes", "group": "greenhouse", "status": "running"}
+]
