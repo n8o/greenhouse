@@ -55,11 +55,18 @@ type Verify struct {
 	Commands []string `toml:"commands"`
 }
 
-// Stage is the budget of one LLM stage session.
+// Stage is the budget of one LLM stage session. Model and Effort are pinned
+// per stage: a session that leaves them out inherits the user's Claude Code
+// default, which may be the most expensive model at the highest effort.
 type Stage struct {
 	Model    string `toml:"model"`
+	Effort   string `toml:"effort"`
 	MaxTurns int    `toml:"max_turns"`
 }
+
+// Efforts are the reasoning efforts a Claude session accepts
+// (`agent-deck launch -effort`).
+var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // Default returns the config used for any key greenhouse.toml leaves out.
 func Default() Config {
@@ -140,6 +147,14 @@ func (c Config) Validate() error {
 		}
 		if s.Model == "" {
 			errs = append(errs, fmt.Errorf("stages.%s.model is required", name))
+		}
+		if strings.Contains(strings.ToLower(s.Model), "haiku") {
+			// Claude Code starts such a session in manual mode, and an
+			// unattended session stalls on its first permission prompt.
+			errs = append(errs, fmt.Errorf("stages.%s.model %q cannot run in auto mode; use sonnet or opus", name, s.Model))
+		}
+		if !slices.Contains(Efforts, s.Effort) {
+			errs = append(errs, fmt.Errorf("stages.%s.effort must be one of %s, got %q", name, strings.Join(Efforts, ", "), s.Effort))
 		}
 		if s.MaxTurns < 1 {
 			errs = append(errs, fmt.Errorf("stages.%s.max_turns must be >= 1, got %d", name, s.MaxTurns))

@@ -1,0 +1,9 @@
+{
+  "claude_session_id": "c-1",
+  "content": "PONG\n===AGENTDECK_DONE=== status=ok summary=Replied with PONG",
+  "role": "assistant",
+  "session_id": "30cbb421-1",
+  "success": true,
+  "timestamp": "2026-09-30T02:14:30.020Z",
+  "tool": "claude"
+}
