@@ -43,4 +43,7 @@ nugit pr-render -base main -head HEAD      # must have no fail findings
 5. **Commit trailers** (`symptom:`, `decision:`, `rejected:`, `learned:`,
    `affects:`, `keywords:`) when a change carries a decision. Durable decisions
    become `.nugit/decisions/` files.
-6. **Every PR is a draft; a human merges.** Never merge, never approve.
+6. **Draft while in progress, ready once validated; a human merges.** Open a PR
+   as a draft. Mark it ready (`gh pr ready`) only when it is dev complete and
+   every verify command passes. Ready means "validated, review me". Never
+   merge, never approve.

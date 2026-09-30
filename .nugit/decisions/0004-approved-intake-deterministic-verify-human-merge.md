@@ -28,7 +28,9 @@ mistakes into main.
 - **Verify:** only commands from `greenhouse.toml` (build, tests, `nugit
   pr-render -fail-on fail`). On failure, the log goes back to implement once;
   after that the bead is parked.
-- **Merge:** every PR is a draft that the human reviews and merges. greenhouse
+- **Draft → ready → merge:** implement opens the PR as a draft. Only a verify
+  pass marks it ready (`gh pr ready`), so a ready PR always means dev complete
+  and validated. The human reviews and merges ready PRs. greenhouse
   never merges, and it never approves.
 - **Backlog cap:** no new implement launches while `wip.open_prs` agent PRs are
   open.

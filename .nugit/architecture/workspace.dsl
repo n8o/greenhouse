@@ -1,7 +1,7 @@
 workspace "greenhouse" "A software factory that fits within one person's Claude Max subscription." {
 
   model {
-    human = person "Maintainer" "Writes the plan, reviews and merges every draft PR."
+    human = person "Maintainer" "Writes the plan, reviews and merges every ready PR."
 
     sys = softwareSystem "greenhouse" {
 

@@ -3,8 +3,8 @@
 A software factory that fits within one person's Claude Max subscription.
 A deterministic scheduler moves approved Beads plan steps through spec →
 implement → verify → review, runs each stage as an agent-deck Claude Code
-session, gates every launch on remaining quota, and stops at a draft PR that
-a human merges.
+session, gates every launch on remaining quota, and stops at a PR that is
+marked ready only once it is validated. A human merges.
 
 - Design: [docs/DESIGN.md](docs/DESIGN.md)
 - Decisions: [.nugit/decisions/](.nugit/decisions/)
