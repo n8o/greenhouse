@@ -14,10 +14,17 @@ its "Done when" holds.
 
 ```sh
 bd ready                                   # what is unblocked
-bd update gr-boot-N --status in_progress
-bd close  gr-boot-N --reason "PR #..."
+bd update gr-boot-N --status in_progress   # local only, never committed
+bd close  gr-boot-N --reason "this PR"     # in your step's PR, just before ready
 scripts/beads-export.sh                    # regenerate .beads/plans/ — never hand-edit it
 ```
+
+**Keep commits cheap (ADR-0005).** Git carries the plan, not the run:
+- Never commit a bead's in-progress state or stage labels; the export strips them.
+- Your step's PR closes its own bead. Merge means closed; there are no follow-up bead commits.
+- Your PR changes only your bead's line in `.beads/plans/`. If the export
+  touched other lines (another session's local state), restore them with
+  `git checkout -- <file>` and re-add only your line.
 
 ## Build / test
 
