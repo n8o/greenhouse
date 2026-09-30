@@ -3,8 +3,8 @@
 A software factory that fits within one person's Claude Max subscription.
 
 greenhouse takes a Beads plan (epics, each with a "Done when"), runs every step
-through spec → implement → verify → review, and ends each step at a draft PR a
-human merges. The first product it builds is **itself**: the plan in
+through spec → implement → verify → review, and ends each step at a PR that is
+marked ready for review only after it is validated. A human merges. The first product it builds is **itself**: the plan in
 `.beads/plans/gr-boot.jsonl` is built by hand up to the bootstrap threshold
 (gr-boot-6), and after that greenhouse runs its own remaining steps.
 
@@ -50,9 +50,9 @@ human merges. The first product it builds is **itself**: the plan in
 | stage | LLM? | input | output | on failure |
 |---|---|---|---|---|
 | `spec` | 1 short session | bead + `nugit context` | acceptance criteria + file plan appended to the bead | vague → `parked: needs-human` |
-| `implement` | 1 session, turn-capped | bead + spec + context | commits on a worktree branch, draft PR | → `parked` |
-| `verify` | **no** | the PR branch | pass/fail + log | 1 retry: log goes back to implement; then `parked` |
-| `review` | **human** | draft PR | merge → bead closed | reject → `learn` |
+| `implement` | 1 session, turn-capped | bead + spec + context | commits on a worktree branch, PR opened as **draft** | → `parked` |
+| `verify` | **no** | the PR branch | pass → `gh pr ready`; fail → log | 1 retry: log goes back to implement; then `parked` |
+| `review` | **human** | ready PR | merge → bead closed | reject → `learn` |
 | `learn` | 1 short session | rejection reason + diff | `.nugit/lessons/*.md` (proposed) | — |
 
 The bead label records the stage (`stage:spec|implement|verify|review|parked`).
@@ -82,7 +82,7 @@ agent-deck launch <repo> -worktree <branch> -b -c claude -g greenhouse \
 
 The rendered prompt carries the bead id, the stage, the "Done when", the
 turn budget, and the rules: load `nugit context -budget 12000` for touched
-paths first; commit with trailers; open a **draft** PR stamped with the
+paths first; commit with trailers; open the PR as a **draft**, stamped with the
 session; end with the `===AGENTDECK_DONE===` sentinel. Prompts are versioned
 files in `prompts/`, so a change to how the factory works is a reviewed diff.
 
