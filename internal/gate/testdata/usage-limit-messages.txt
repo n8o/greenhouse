@@ -1,0 +1,11 @@
+# Usage-limit stops Claude Code reports, one per line, as ParseUsageLimit must
+# recognise them. Source: the Claude Code error reference,
+# https://code.claude.com/docs/en/errors ("Session and Weekly Limits"), and the
+# earlier "Claude usage limit reached. Your limit will reset at 3pm" wording
+# (anthropics/claude-code issue #9236). No real transcript is recorded here.
+You've hit your session limit · resets 3:45pm
+You've hit your weekly limit · resets Mon 12:00am
+You've hit your Opus limit · resets 3:45pm
+You've hit your Sonnet limit · resets 3:45pm
+Claude usage limit reached. Your limit will reset at 3pm (America/New_York).
+Claude AI usage limit reached|1790820000

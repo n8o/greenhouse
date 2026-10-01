@@ -17,8 +17,11 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       stage = component "stage" "Pure state machine: bead stage + event -> next stage/action. No I/O." {
         properties { paths "internal/stage/**" }
       }
-      gate = component "gate" "Quota / WIP / open-PR gates. Deterministic." {
+      gate = component "gate" "Quota / WIP / open-PR gates: pure decisions over a usage reading, counts and the time, plus read-only agent-deck/gh probes." {
         properties { paths "internal/gate/**" }
+      }
+      doctor = component "doctor" "Read-only host checks: statusLine ingest, notify-daemon, tools, MCP approval, stage models." {
+        properties { paths "internal/doctor/**" }
       }
       launch = component "launch" "Starts stage sessions via agent-deck and collects their completions." {
         properties { paths "internal/launch/**" }
@@ -37,6 +40,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       cli -> plan "reads/advances beads"
       cli -> stage "decides next action"
       cli -> gate "checks before launch"
+      cli -> doctor "greenhouse doctor"
       cli -> launch "starts stage sessions"
       cli -> verify "runs checks"
       cli -> ledger "records runs"
@@ -44,6 +48,11 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       launch -> prompts "renders"
       launch -> config "reads stage model/effort/turn budget"
       launch -> stage "parses session results into events"
+      gate -> config "reads quota and WIP caps"
+      gate -> launch "finds implement sessions by group and title"
+      gate -> stage "gates WIP and backlog on implement only"
+      doctor -> config "reads stage models"
+      doctor -> launch "runs the MCP preflight"
     }
 
     human -> sys "plans, reviews, merges"

@@ -1,0 +1,8 @@
+# Messages from the same reference that must NOT park the quota gate: spend
+# caps and API throttles are not the subscription windows (ADR-0002), and a
+# warning is not a stop.
+You've hit your monthly spend limit · raise it at claude.ai/settings/usage
+spend limit reached (daily; resets 2026-08-09 00:00 UTC)
+API Error: Request rejected (429) · this may be a temporary capacity issue. If it persists, check https://status.claude.com.
+API Error: Server is temporarily limiting requests (not your usage limit)
+You've used 85% of your session limit · resets 3:45pm

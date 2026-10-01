@@ -80,6 +80,19 @@ func Default() Config {
 // Load reads the config at path over Default and validates it. Unknown keys
 // are an error, so a typo cannot silently fall back to a default.
 func Load(path string) (Config, error) {
+	cfg, err := Read(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, fmt.Errorf("config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Read is Load without Validate. `greenhouse doctor` uses it to report on a
+// config that would not validate, rather than stopping at the first error.
+func Read(path string) (Config, error) {
 	cfg := Default()
 	md, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
@@ -97,9 +110,6 @@ func Load(path string) (Config, error) {
 	}
 	if abs, err := filepath.Abs(cfg.Repo); err == nil {
 		cfg.Repo = abs
-	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -148,9 +158,7 @@ func (c Config) Validate() error {
 		if s.Model == "" {
 			errs = append(errs, fmt.Errorf("stages.%s.model is required", name))
 		}
-		if strings.Contains(strings.ToLower(s.Model), "haiku") {
-			// Claude Code starts such a session in manual mode, and an
-			// unattended session stalls on its first permission prompt.
+		if ManualMode(s.Model) {
 			errs = append(errs, fmt.Errorf("stages.%s.model %q cannot run in auto mode; use sonnet or opus", name, s.Model))
 		}
 		if !slices.Contains(Efforts, s.Effort) {
@@ -162,6 +170,11 @@ func (c Config) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// ManualMode reports whether Claude Code starts a session on model in manual
+// mode (haiku), where an unattended session stalls on its first permission
+// prompt.
+func ManualMode(model string) bool { return strings.Contains(strings.ToLower(model), "haiku") }
 
 func llmStageList() string {
 	names := make([]string, len(LLMStages))

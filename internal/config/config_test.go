@@ -105,3 +105,28 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("want an error for a missing file")
 	}
 }
+
+func TestReadSkipsValidate(t *testing.T) {
+	body := strings.Replace(minimal, `model = "opus"`, `model = "haiku"`, 1)
+	cfg, err := Read(write(t, body))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cfg.Stages["implement"].Model != "haiku" || !filepath.IsAbs(cfg.Repo) {
+		t.Errorf("got %+v", cfg)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted a haiku stage")
+	}
+	if _, err := Read(write(t, "bogus = 1\n"+minimal)); err == nil || !strings.Contains(err.Error(), "unknown keys: bogus") {
+		t.Errorf("Read error = %v, want unknown keys", err)
+	}
+}
+
+func TestManualMode(t *testing.T) {
+	for model, want := range map[string]bool{"haiku": true, "claude-haiku-4-5": true, "Haiku": true, "sonnet": false, "opus": false, "": false} {
+		if got := ManualMode(model); got != want {
+			t.Errorf("ManualMode(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
