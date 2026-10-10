@@ -53,6 +53,8 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       gate -> stage "gates WIP and backlog on implement only"
       doctor -> config "reads stage models"
       doctor -> launch "runs the MCP preflight"
+      doctor -> gate "reads the usage reading and its freshness"
+      verify -> stage "maps results onto verify events"
     }
 
     human -> sys "plans, reviews, merges"

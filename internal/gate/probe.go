@@ -72,7 +72,7 @@ func (c *CLI) Usage(ctx context.Context) (*Reading, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseUsage(out)
+	return ParseUsage(out)
 }
 
 // usageJSON is `agent-deck usage --json`.
@@ -89,7 +89,9 @@ type usageJSON struct {
 	} `json:"providers"`
 }
 
-func parseUsage(out []byte) (*Reading, error) {
+// ParseUsage reads the Claude reading out of `agent-deck usage --json`; nil
+// means agent-deck has none.
+func ParseUsage(out []byte) (*Reading, error) {
 	var u usageJSON
 	if err := json.Unmarshal(out, &u); err != nil {
 		return nil, fmt.Errorf("parse agent-deck usage --json: %w", err)

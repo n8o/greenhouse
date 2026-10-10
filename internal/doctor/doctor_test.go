@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/n8o/greenhouse/internal/config"
 )
@@ -24,8 +26,11 @@ func TestStatusLine(t *testing.T) {
 		detail   string
 		fix      string
 	}{
-		{"wired", `{"statusLine":{"type":"command","command":"agent-deck usage ingest claude"}}`, nil, true, "statusLine runs agent-deck usage ingest claude", ""},
-		{"wired by path, wrapping", `{"statusLine":{"type":"command","command":"/opt/bin/agent-deck usage ingest claude -- ~/bin/line.sh"}}`, nil, true, "statusLine runs", ""},
+		{"wired", `{"statusLine":{"type":"command","command":"agent-deck usage ingest claude"}}`, nil, true, "feeds the usage cache", ""},
+		{"wired by path, wrapping", `{"statusLine":{"type":"command","command":"/opt/bin/agent-deck usage ingest claude -- ~/bin/line.sh"}}`, nil, true, "feeds the usage cache", ""},
+		{"statusline-wrap with profile and path", `{"statusLine":{"type":"command","command":"/Users/u/.local/bin/agent-deck -p default usage statusline-wrap"}}`, nil, true, "feeds the usage cache", ""},
+		{"statusline-wrap bare", `{"statusLine":{"type":"command","command":"agent-deck usage statusline-wrap"}}`, nil, true, "feeds the usage cache", ""},
+		{"profile flag without usage", `{"statusLine":{"type":"command","command":"agent-deck -p default status"}}`, nil, false, "does not run", ""},
 		{"no statusLine", `{"model":"opus"}`, nil, false, "no statusLine command",
 			`"statusLine": {"type":"command","command":"agent-deck usage ingest claude"}`},
 		{"no settings file", "", fs.ErrNotExist, false, "no statusLine command",
@@ -127,6 +132,7 @@ func (f *fakeEnv) env() Env {
 			key := name + " " + strings.Join(args, " ")
 			return []byte(f.outs[key]), []byte(f.errOuts[key]), f.errs[key]
 		},
+		Now: func() time.Time { return time.Unix(1791631700, 0) },
 		ReadFile: func(path string) ([]byte, error) {
 			if path != settingsPath {
 				return nil, fs.ErrNotExist
@@ -192,6 +198,14 @@ func TestRun(t *testing.T) {
 	}{
 		{"healthy", func(*fakeEnv) {}, "opus", nil},
 		{"statusLine not wired", func(f *fakeEnv) { f.settings = `{}` }, "opus", []string{"statusline"}},
+		{"unrecognised statusLine but fresh usage", func(f *fakeEnv) {
+			f.settings = `{"statusLine":{"type":"command","command":"~/bin/line.sh"}}`
+			f.outs["agent-deck usage --json"] = `{"providers":[{"id":"claude","windows":[{"kind":"seven_day","used_percentage":5}],"updated_at":1791631639,"stale":false}]}`
+		}, "opus", nil},
+		{"unrecognised statusLine and stale usage", func(f *fakeEnv) {
+			f.settings = `{"statusLine":{"type":"command","command":"~/bin/line.sh"}}`
+			f.outs["agent-deck usage --json"] = `{"providers":[{"id":"claude","windows":[{"kind":"seven_day","used_percentage":5}],"updated_at":1791631639,"stale":true}]}`
+		}, "opus", []string{"statusline"}},
 		{"daemon down", func(f *fakeEnv) { f.outs["agent-deck inbox writer-status --json"] = `{"running":false}` }, "opus", []string{"notify-daemon"}},
 		{"jq and bd missing", func(f *fakeEnv) { f.missing["jq"], f.missing["bd"] = true, true }, "opus", []string{"bd", "jq"}},
 		{"nugit without plan", func(f *fakeEnv) { f.errOuts["nugit plan"] = `unknown command "plan"` }, "opus", []string{"nugit"}},
@@ -237,5 +251,31 @@ func TestPrint(t *testing.T) {
 		"                  \"statusLine\": {}\n"
 	if b.String() != want {
 		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
+	}
+}
+
+func TestFreshUsage(t *testing.T) {
+	now := time.Unix(1791631700, 0)
+	usage := func(updated int64, stale bool, id string) []byte {
+		return []byte(fmt.Sprintf(`{"providers":[{"id":%q,"windows":[{"kind":"seven_day","used_percentage":10,"resets_at":1791784800}],"updated_at":%d,"stale":%t}]}`, id, updated, stale))
+	}
+	tests := []struct {
+		name string
+		out  []byte
+		want bool
+	}{
+		{"fresh", usage(1791631639, false, "claude"), true},
+		{"flagged stale", usage(1791631639, true, "claude"), false},
+		{"too old", usage(1791631700-3600, false, "claude"), false},
+		{"other provider only", usage(1791631639, false, "codex"), false},
+		{"not JSON", []byte("warn"), false},
+		{"empty", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FreshUsage(tt.out, now); got != tt.want {
+				t.Errorf("FreshUsage = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

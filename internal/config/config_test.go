@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const minimal = `
@@ -64,6 +65,9 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Quota != def.Quota {
 		t.Errorf("Quota = %+v, want default %+v", cfg.Quota, def.Quota)
 	}
+	if cfg.Verify.CommandTimeout() != 10*time.Minute {
+		t.Errorf("Verify.CommandTimeout = %v, want the 10m default", cfg.Verify.CommandTimeout())
+	}
 	if cfg.Repo != filepath.Dir(path) {
 		t.Errorf("Repo = %q, want the config's directory %q", cfg.Repo, filepath.Dir(path))
 	}
@@ -81,6 +85,8 @@ func TestLoadRejects(t *testing.T) {
 		{"zero wip", minimal + "\n[wip]\nimplement = 0\n", "wip.implement must be >= 1"},
 		{"share above 1", minimal + "\n[quota]\nweekly_share = 1.5\n", "quota.weekly_share must be in (0, 1]"},
 		{"no verify", strings.Replace(minimal, `commands = ["go test ./..."]`, "commands = []", 1), "verify.commands must list"},
+		{"bad timeout", strings.Replace(minimal, "commands = [", "timeout = \"soon\"\ncommands = [", 1), `verify.timeout must be a positive duration`},
+		{"zero timeout", strings.Replace(minimal, "commands = [", "timeout = \"0s\"\ncommands = [", 1), `verify.timeout must be a positive duration`},
 		{"blank verify", strings.Replace(minimal, `"go test ./..."`, `" "`, 1), "verify.commands[0] is empty"},
 		{"missing stage", strings.Replace(minimal, "[stages.learn]", "[stages.other]", 1), "stages.learn is required"},
 		{"not an llm stage", minimal + "\n[stages.verify]\nmodel = \"x\"\nmax_turns = 1\n", "stages.verify: not an LLM stage"},

@@ -17,8 +17,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/n8o/greenhouse/internal/config"
+	"github.com/n8o/greenhouse/internal/gate"
 	"github.com/n8o/greenhouse/internal/launch"
 )
 
@@ -44,6 +46,15 @@ type Env struct {
 	// agent-deck warns on stderr around the JSON on its stdout.
 	Run      func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 	ReadFile func(path string) ([]byte, error)
+	// Now is the clock for reading freshness; nil means time.Now.
+	Now func() time.Time
+}
+
+func (e Env) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
 }
 
 // System returns the Env of this host.
@@ -76,7 +87,11 @@ func Run(ctx context.Context, env Env, configPath string) []Result {
 	var rs []Result
 	settingsPath := filepath.Join(env.ClaudeDir, "settings.json")
 	settings, err := env.ReadFile(settingsPath)
-	rs = append(rs, StatusLine(settingsPath, settings, err))
+	sl := StatusLine(settingsPath, settings, err)
+	if usage, _, _ := env.Run(ctx, "agent-deck", "usage", "--json"); !sl.OK && FreshUsage(usage, env.now()) {
+		sl = Result{Name: sl.Name, OK: true, Detail: "agent-deck usage has a fresh Claude reading (" + sl.Detail + ")"}
+	}
+	rs = append(rs, sl)
 	out, _, err := env.Run(ctx, "agent-deck", "inbox", "writer-status", "--json")
 	rs = append(rs, NotifyDaemon(out, err))
 	for _, tool := range Tools {
@@ -172,17 +187,43 @@ func StatusLine(path string, settings []byte, readErr error) Result {
 		r.Fix = snippet(s.StatusLine.Command)
 	default:
 		r.OK = true
-		r.Detail = "statusLine runs " + IngestCommand
+		r.Detail = "statusLine feeds the usage cache (" + s.StatusLine.Command + ")"
 	}
 	return r
 }
 
 // ingests reports whether command starts by running agent-deck (by name or
-// path) with `usage ingest claude`.
+// path), optionally with global flags such as `-p default`, and then either
+// `usage ingest claude` or `usage statusline-wrap`. Both feed the usage cache.
 func ingests(command string) bool {
 	f := strings.Fields(command)
-	return len(f) >= 4 && filepath.Base(f[0]) == "agent-deck" &&
-		f[1] == "usage" && f[2] == "ingest" && f[3] == "claude"
+	if len(f) == 0 || filepath.Base(f[0]) != "agent-deck" {
+		return false
+	}
+	f = f[1:]
+	for len(f) > 0 && strings.HasPrefix(f[0], "-") {
+		skip := 1
+		if (f[0] == "-p" || f[0] == "--profile") && len(f) > 1 {
+			skip = 2
+		}
+		f = f[skip:]
+	}
+	if len(f) < 2 || f[0] != "usage" {
+		return false
+	}
+	return f[1] == "statusline-wrap" || (len(f) >= 3 && f[1] == "ingest" && f[2] == "claude")
+}
+
+// FreshUsage reports whether `agent-deck usage --json` output carries a
+// fresh Claude reading at now. That is the quota gate's real input, so it
+// passes the statusline check whatever the statusLine command looks like.
+func FreshUsage(out []byte, now time.Time) bool {
+	r, err := gate.ParseUsage(out)
+	if err != nil || r == nil {
+		return false
+	}
+	ok, _ := r.Fresh(now)
+	return ok
 }
 
 // NotifyDaemon checks `agent-deck inbox writer-status --json`: without a

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -53,6 +54,15 @@ type Quota struct {
 // Verify lists the deterministic checks run on a PR branch (ADR-0004).
 type Verify struct {
 	Commands []string `toml:"commands"`
+	// Timeout bounds each command, as a Go duration ("10m"). A hung command
+	// fails verify instead of holding the factory.
+	Timeout string `toml:"timeout"`
+}
+
+// CommandTimeout returns Verify.Timeout parsed; Validate has checked it.
+func (v Verify) CommandTimeout() time.Duration {
+	d, _ := time.ParseDuration(v.Timeout)
+	return d
 }
 
 // Stage is the budget of one LLM stage session. Model and Effort are pinned
@@ -71,9 +81,10 @@ var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 // Default returns the config used for any key greenhouse.toml leaves out.
 func Default() Config {
 	return Config{
-		Repo:  ".",
-		WIP:   WIP{Implement: 1, OpenPRs: 3},
-		Quota: Quota{FiveHourMax: 0.8, WeeklyShare: 0.5},
+		Repo:   ".",
+		WIP:    WIP{Implement: 1, OpenPRs: 3},
+		Quota:  Quota{FiveHourMax: 0.8, WeeklyShare: 0.5},
+		Verify: Verify{Timeout: "10m"},
 	}
 }
 
@@ -137,6 +148,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.Verify.Commands) == 0 {
 		errs = append(errs, errors.New("verify.commands must list at least one command"))
+	}
+	if d, err := time.ParseDuration(c.Verify.Timeout); err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("verify.timeout must be a positive duration like \"10m\", got %q", c.Verify.Timeout))
 	}
 	for i, cmd := range c.Verify.Commands {
 		if strings.TrimSpace(cmd) == "" {

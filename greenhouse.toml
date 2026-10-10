@@ -15,6 +15,7 @@ five_hour_max = 0.8 # launch only while 5-hour usage is below this
 weekly_share = 0.5  # launch only while 7-day usage is below this
 
 [verify] # deterministic checks on a PR branch, run in order (ADR-0004)
+timeout = "10m" # per command; a hung command fails verify
 commands = [
   "go build ./...",
   "go test ./...",
