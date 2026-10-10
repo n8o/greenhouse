@@ -74,6 +74,12 @@ type Reading struct {
 	Stale     bool // agent-deck's own staleness flag
 }
 
+// Fresh reports whether r can gate launches at now, and if not, why.
+func (r *Reading) Fresh(now time.Time) (bool, string) {
+	reason := r.freshness(now)
+	return reason == "", reason
+}
+
 // freshness returns "" if r can gate launches at now, or why it cannot.
 func (r *Reading) freshness(now time.Time) string {
 	switch {
