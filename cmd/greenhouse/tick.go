@@ -1,0 +1,691 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/n8o/greenhouse/internal/config"
+	"github.com/n8o/greenhouse/internal/gate"
+	"github.com/n8o/greenhouse/internal/launch"
+	"github.com/n8o/greenhouse/internal/ledger"
+	"github.com/n8o/greenhouse/internal/plan"
+	"github.com/n8o/greenhouse/internal/stage"
+	"github.com/n8o/greenhouse/internal/verify"
+)
+
+// VerifyBase is the ref a PR is rebased onto and verified against.
+const VerifyBase = "origin/main"
+
+// adapters are every external effect a tick has: bd, agent-deck, gh, the
+// usage and count probes, and the program runner verify and git use.
+type adapters struct {
+	plan   plan.Store
+	deck   launch.Deck
+	gh     GitHub
+	probe  gate.Probe
+	runner verify.Runner
+	now    func() time.Time
+}
+
+// scheduler runs ticks (DESIGN.md "Pipeline"). It holds no state between
+// ticks: each one rebuilds what it knows from bd, agent-deck, gh and
+// .greenhouse/, so a scheduler killed at any point loses nothing.
+//
+// One tick:
+//  1. collect: every finished stage session gets its outcome parsed,
+//     appended to the ledger, and is stopped. A session past its stage's
+//     wall-clock limit is stopped and recorded as failed.
+//  2. advance: each bead takes the steps its state allows: carry out the
+//     transition its last ledger record implies, launch its stage session
+//     (gated), run verify, or read its PR's review outcome. At most one new
+//     approved bead starts per tick.
+//
+// Idempotence: the ledger is the commit point. A transition is carried out
+// while the bead's stage label still equals the stage of its last record,
+// and the label moves last, so every effect before it is checked and
+// repeated safely on the next tick after a crash. A launch is preceded by
+// an open-run file, and a session already running for that run is adopted
+// rather than launched again.
+type scheduler struct {
+	adapters
+	cfg      config.Config
+	launcher *launch.Launcher
+	store    *ledger.Store
+	local    *time.Location // zone of usage-limit reset times
+	out      io.Writer
+	dry      bool // print every decision, carry out none
+}
+
+// tick is what one Tick knows. In a dry run nothing is written, so tick
+// also overlays the open runs the run would have written.
+type tick struct {
+	beads    []plan.Bead
+	recs     []ledger.Record
+	kids     []launch.Child
+	in       gate.Inputs
+	runs     map[string]*ledger.Run // overlay: bead → open run (nil: none)
+	started  bool                   // a new bead started this tick
+	labelled bool                   // the greenhouse label is ensured
+}
+
+// Tick runs one pass.
+func (s *scheduler) Tick(ctx context.Context) error {
+	now := s.now()
+	beads, err := s.plan.List(ctx)
+	if err != nil {
+		return err
+	}
+	recs, err := s.store.Records()
+	if err != nil {
+		return err
+	}
+	kids, err := s.deck.Children(ctx, s.launcher.Parent)
+	if err != nil {
+		return fmt.Errorf("poll sessions: %w", err)
+	}
+	park, err := s.store.Park()
+	if err != nil {
+		return err
+	}
+	in := gate.Gather(ctx, s.probe, now)
+	in.Quota, in.WIP = s.cfg.Quota, s.cfg.WIP
+	in.Park = gate.Park{Until: park.Until, Reason: park.Reason}
+	t := &tick{beads: beads, recs: recs, kids: kids, in: in, runs: map[string]*ledger.Run{}}
+
+	fmt.Fprintf(s.out, "tick %s%s: %d beads, %d stage sessions, %d ledger records\n",
+		now.Format(time.RFC3339), map[bool]string{true: " (dry run: nothing is carried out)"}[s.dry],
+		len(beads), len(kids), len(recs))
+
+	var errs []error
+	for _, k := range kids {
+		if err := s.collect(ctx, t, k); err != nil {
+			errs = append(errs, fmt.Errorf("collect %s: %w", k.Title, err))
+		}
+	}
+	for i := range t.beads {
+		if err := s.advance(ctx, t, &t.beads[i]); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", t.beads[i].ID, err))
+		}
+	}
+	if !t.started {
+		fmt.Fprintln(s.out, "no new bead started: "+s.whyNoStart(t))
+		for _, d := range gate.Evaluate(t.in, stage.Implement) {
+			fmt.Fprintf(s.out, "  gate %s\n", d)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// say prints one decision line for bead.
+func (s *scheduler) say(bead, format string, args ...any) {
+	fmt.Fprintf(s.out, "%-10s %s\n", bead, fmt.Sprintf(format, args...))
+}
+
+// act prints an effect and carries it out unless this is a dry run.
+func (s *scheduler) act(bead, what string, fn func() error) error {
+	if s.dry {
+		s.say(bead, "  would %s", what)
+		return nil
+	}
+	s.say(bead, "  %s", what)
+	return fn()
+}
+
+func (s *scheduler) run(t *tick, bead string) (*ledger.Run, error) {
+	if r, ok := t.runs[bead]; ok {
+		return r, nil
+	}
+	r, err := s.store.Run(bead)
+	if err != nil {
+		return nil, err
+	}
+	t.runs[bead] = r
+	return r, nil
+}
+
+func (s *scheduler) putRun(t *tick, r ledger.Run, what string) error {
+	t.runs[r.Bead] = &r
+	return s.act(r.Bead, what, func() error { return s.store.PutRun(r) })
+}
+
+func (s *scheduler) deleteRun(t *tick, bead string) error {
+	t.runs[bead] = nil
+	return s.act(bead, "forget the open run", func() error { return s.store.DeleteRun(bead) })
+}
+
+func (s *scheduler) record(t *tick, r ledger.Record) error {
+	t.recs = append(t.recs, r)
+	what := fmt.Sprintf("append to ledger: %s %s", r.Stage, r.Outcome)
+	if r.PR > 0 {
+		what += fmt.Sprintf(" (PR #%d)", r.PR)
+	}
+	return s.act(r.Bead, what, func() error { return s.store.Append(r) })
+}
+
+func findBead(beads []plan.Bead, id string) *plan.Bead {
+	for i := range beads {
+		if beads[i].ID == id {
+			return &beads[i]
+		}
+	}
+	return nil
+}
+
+// collect handles one child session: it stops sessions already collected,
+// and records the outcome of the bead's current run once it is finished or
+// past its wall-clock limit.
+func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error {
+	id, st, ok := launch.ParseTitle(k.Title)
+	b := findBead(t.beads, id)
+	if !ok || b == nil {
+		return nil // not a stage session of this plan
+	}
+	run, err := s.run(t, id)
+	if err != nil {
+		return err
+	}
+	if ledger.Has(t.recs, k.ID) {
+		if run != nil && run.Session == k.ID {
+			if err := s.deleteRun(t, id); err != nil {
+				return err
+			}
+		}
+		if k.Status != "stopped" {
+			return s.act(id, "stop collected session "+k.ID, func() error { return s.deck.Stop(ctx, k.ID) })
+		}
+		return nil
+	}
+	if b.Stage() != string(st) || run == nil || run.Stage != string(st) || (run.Session != "" && run.Session != k.ID) {
+		s.say(id, "session %s (%s, %s) is not the bead's open run; left alone for a human", k.ID, k.Title, k.Status)
+		return nil
+	}
+	if run.Session == "" {
+		adopted := *run
+		adopted.Session = k.ID
+		if err := s.putRun(t, adopted, "adopt session "+k.ID+" as the open "+string(st)+" run"); err != nil {
+			return err
+		}
+		run = &adopted
+	}
+
+	now := s.now()
+	rec := ledger.Record{Bead: id, Stage: string(st), Session: k.ID, Start: run.Start, End: now,
+		Before: run.Before, After: quotaOf(t.in.Reading), Retries: run.Retries}
+	ev, content, done, err := s.launcher.Collect(ctx, k.ID, st)
+	if !done {
+		if err != nil {
+			return err
+		}
+		limit := s.cfg.Timeout(st)
+		if now.Sub(run.Start) <= limit {
+			s.say(id, "[%s] session %s working (%s of %s)", st, k.ID, now.Sub(run.Start).Round(time.Second), limit)
+			return nil
+		}
+		rec.TimedOut = true
+		ev = timeoutEvent(st, limit)
+	} else if p, hit := gate.ParseUsageLimit(content, now, s.local); hit {
+		if err := s.act(id, fmt.Sprintf("park launches until %s: %s", p.Until.Format(time.RFC3339), p.Reason), func() error {
+			return s.store.PutPark(ledger.Park{Until: p.Until, Reason: p.Reason})
+		}); err != nil {
+			return err
+		}
+		if p.Until.After(t.in.Park.Until) {
+			t.in.Park = p
+		}
+		rec.Outcome, rec.Reason = ledger.UsageLimit, p.Reason
+	} else if err != nil {
+		ev = stage.Event{Kind: stage.NeedsHuman, Reason: fmt.Sprintf("session %s broke the result contract: %v", k.ID, err)}
+	}
+	if rec.Outcome == "" {
+		rec.Outcome, rec.Reason, rec.PR = string(ev.Kind), ev.Reason, ev.PR
+	}
+	s.say(id, "[%s] session %s finished: %s", st, k.ID, rec.Outcome)
+	if err := s.record(t, rec); err != nil {
+		return err
+	}
+	if err := s.deleteRun(t, id); err != nil {
+		return err
+	}
+	return s.act(id, "stop session "+k.ID, func() error { return s.deck.Stop(ctx, k.ID) })
+}
+
+// timeoutEvent is how a session stopped at its wall-clock limit fails.
+func timeoutEvent(st stage.Stage, limit time.Duration) stage.Event {
+	why := fmt.Sprintf("%s session passed its %s wall-clock limit and was stopped", st, limit)
+	if st == stage.Implement {
+		return stage.Event{Kind: stage.ImplementFailed, Reason: why}
+	}
+	return stage.Event{Kind: stage.NeedsHuman, Reason: why + "; raise stages." + string(st) + ".timeout or split the bead"}
+}
+
+func quotaOf(r *gate.Reading) ledger.Quota {
+	var q ledger.Quota
+	if r == nil {
+		return q
+	}
+	if r.FiveHour != nil {
+		v := r.FiveHour.UsedPercentage
+		q.FiveHour = &v
+	}
+	if r.SevenDay != nil {
+		v := r.SevenDay.UsedPercentage
+		q.SevenDay = &v
+	}
+	return q
+}
+
+// advance takes the steps bead's state allows. A dry run stops after the
+// first, since the state it would have written is not there to read.
+func (s *scheduler) advance(ctx context.Context, t *tick, b *plan.Bead) error {
+	if b.Done() {
+		return nil
+	}
+	for range 8 {
+		moved, err := s.step(ctx, t, b)
+		if err != nil || !moved || s.dry {
+			return err
+		}
+	}
+	return nil
+}
+
+// step takes one step of bead, reporting whether it moved.
+func (s *scheduler) step(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
+	st := stage.Stage(b.Stage())
+	run, err := s.run(t, b.ID)
+	if err != nil {
+		return false, err
+	}
+	if run != nil {
+		switch {
+		case st == "" && run.Stage == string(stage.Spec):
+			// Crashed between writing the start's open run and its label.
+			return true, s.setStage(ctx, b, stage.Spec)
+		case run.Stage != string(st):
+			s.say(b.ID, "open %s run does not match stage %q (changed by hand?); dropping it", run.Stage, st)
+			return true, s.deleteRun(t, b.ID)
+		case run.Session == "":
+			return s.launch(ctx, t, b, st, run)
+		case !slices.ContainsFunc(t.kids, func(k launch.Child) bool { return k.ID == run.Session }):
+			// Removed outside greenhouse; its outcome is unknown.
+			return true, s.vanished(t, b.ID, *run)
+		}
+		return false, nil // in flight; collect watches it
+	}
+
+	if last := ledger.Last(t.recs, b.ID); st != "" && last != nil && last.Stage == string(st) && last.Outcome != ledger.UsageLimit {
+		return s.apply(ctx, t, b, st, *last)
+	}
+	switch st {
+	case "":
+		return s.start(ctx, t, b)
+	case stage.Spec, stage.Implement, stage.Learn:
+		return s.launch(ctx, t, b, st, nil)
+	case stage.Verify:
+		return s.verify(ctx, t, b)
+	case stage.Review:
+		return s.review(ctx, t, b)
+	}
+	if st == stage.Parked {
+		s.say(b.ID, "[parked] waiting on a human (reason in the ledger); remove stage:parked to restart at spec")
+	}
+	return false, nil
+}
+
+func (s *scheduler) setStage(ctx context.Context, b *plan.Bead, st stage.Stage) error {
+	err := s.act(b.ID, "label stage:"+string(st), func() error { return s.plan.SetStage(ctx, b.ID, string(st)) })
+	if err == nil && !s.dry {
+		var keep []string
+		for _, l := range b.Labels {
+			if !strings.HasPrefix(l, plan.StagePrefix) {
+				keep = append(keep, l)
+			}
+		}
+		b.Labels = append(keep, plan.StagePrefix+string(st))
+	}
+	return err
+}
+
+// apply carries out the transition last implies. Every effect is checked
+// first or safe to repeat; the label moves last.
+func (s *scheduler) apply(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, last ledger.Record) (bool, error) {
+	ev := stage.Event{Kind: stage.EventKind(last.Outcome), Reason: last.Reason, PR: last.PR, Retries: last.Retries}
+	next, acts, err := stage.Next(st, ev)
+	if err != nil {
+		s.say(b.ID, "[%s] cannot route %s: %v; left for a human", st, ev.Kind, err)
+		return false, nil
+	}
+	kinds := make([]string, len(acts))
+	for i, a := range acts {
+		kinds[i] = string(a.Kind)
+	}
+	s.say(b.ID, "[%s] event %s → %s; actions [%s]", st, ev.Kind, next, strings.Join(kinds, " "))
+	for _, a := range acts {
+		var err error
+		switch a.Kind {
+		case stage.ActVerify:
+			err = s.labelPR(ctx, t, b.ID, a.PR)
+		case stage.ActMarkReady:
+			err = s.markReady(ctx, b.ID, a.PR)
+		case stage.ActCloseBead:
+			if b.Status == "closed" {
+				s.say(b.ID, "  the bead is already closed (by its PR)")
+				break
+			}
+			err = s.act(b.ID, "close the bead", func() error {
+				return s.plan.Close(ctx, b.ID, fmt.Sprintf("merged in PR #%d", last.PR))
+			})
+		case stage.ActPark:
+			s.say(b.ID, "  park: %s", firstLine(a.Reason))
+		case stage.ActLaunch, stage.ActRecord:
+			// The launch is the next step (gated); the record is the ledger line.
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	if next == stage.Done {
+		b.Status = "closed"
+	}
+	return true, s.setStage(ctx, b, next)
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
+}
+
+// labelPR ensures the greenhouse label exists and is on PR n.
+func (s *scheduler) labelPR(ctx context.Context, t *tick, bead string, n int) error {
+	if !t.labelled {
+		if err := s.act(bead, "ensure the "+gate.PRLabel+" label exists", func() error { return s.gh.EnsureLabel(ctx) }); err != nil {
+			return err
+		}
+		t.labelled = true
+	}
+	return s.act(bead, fmt.Sprintf("label PR #%d %s", n, gate.PRLabel), func() error { return s.gh.AddLabel(ctx, n) })
+}
+
+func (s *scheduler) markReady(ctx context.Context, bead string, n int) error {
+	pr, err := s.gh.PR(ctx, n)
+	if err != nil {
+		return err
+	}
+	if !pr.IsDraft {
+		s.say(bead, "  PR #%d is already ready for review", n)
+		return nil
+	}
+	return s.act(bead, fmt.Sprintf("mark PR #%d ready for review", n), func() error { return s.gh.Ready(ctx, n) })
+}
+
+// start moves a ready approved bead with no stage into spec, if the gates
+// allow and no other bead started this tick.
+func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
+	if !b.Approved() || t.started {
+		return false, nil
+	}
+	if !plan.Ready(*b, t.beads) {
+		s.say(b.ID, "approved, not ready: %s", blockers(*b, t.beads))
+		return false, nil
+	}
+	next, _ := stage.Start()
+	if !s.gates(t, b.ID, next) {
+		return false, nil
+	}
+	t.started = true
+	s.say(b.ID, "start: ready and %s → %s", plan.ApprovedLabel, next)
+	if err := s.putRun(t, s.newRun(t, b.ID, next), "open a "+string(next)+" run"); err != nil {
+		return false, err
+	}
+	return true, s.setStage(ctx, b, next)
+}
+
+// blockers describes why b is not ready.
+func blockers(b plan.Bead, beads []plan.Bead) string {
+	if b.Status != "open" {
+		return "status " + b.Status
+	}
+	var open []string
+	for _, d := range b.Dependencies {
+		if x := findBead(beads, d.DependsOn); x == nil || !x.Done() {
+			open = append(open, d.DependsOn)
+		}
+	}
+	return "waits on " + strings.Join(open, ", ")
+}
+
+func (s *scheduler) whyNoStart(t *tick) string {
+	for _, b := range t.beads {
+		if b.Stage() == "" && b.Approved() && plan.Ready(b, t.beads) {
+			return "gates hold " + b.ID
+		}
+	}
+	return "no open " + plan.ApprovedLabel + " bead without a stage has all its blockers closed"
+}
+
+func (s *scheduler) newRun(t *tick, bead string, st stage.Stage) ledger.Run {
+	return ledger.Run{Bead: bead, Stage: string(st), Start: s.now(), Before: quotaOf(t.in.Reading),
+		Retries: ledger.Retries(t.recs, bead)}
+}
+
+// gates evaluates and prints the launch gates for an st session.
+func (s *scheduler) gates(t *tick, bead string, st stage.Stage) bool {
+	ds := gate.Evaluate(t.in, st)
+	for _, d := range ds {
+		s.say(bead, "  gate %s", d)
+	}
+	ok, _ := gate.Allowed(ds)
+	return ok
+}
+
+// launch starts bead's st session, if the gates allow. run is the open run
+// to launch, or nil to open one.
+func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, run *ledger.Run) (bool, error) {
+	s.say(b.ID, "[%s] launch a %s session", st, st)
+	if !s.gates(t, b.ID, st) {
+		s.say(b.ID, "  held by the gates")
+		return false, nil
+	}
+	if run == nil {
+		r := s.newRun(t, b.ID, st)
+		if err := s.putRun(t, r, "open a "+string(st)+" run"); err != nil {
+			return false, err
+		}
+		run = &r
+	}
+	req := launch.Request{Bead: b.ID, Title: b.Title, DoneWhen: b.Description, Spec: specOf(*b),
+		Reason: launchReason(t.recs, b.ID, st), Stage: st, Branch: launch.DefaultBranch(b.ID, st)}
+	req.ExistingBranch = s.branchExists(ctx, req.Branch)
+	if s.dry {
+		s.say(b.ID, "  would launch %s on %s (existing branch: %v)", launch.Title(b.ID, st), req.Branch, req.ExistingBranch)
+		return true, nil
+	}
+	s.say(b.ID, "  launch %s on %s", launch.Title(b.ID, st), req.Branch)
+	r, err := s.launcher.Launch(ctx, req)
+	if r.ID != "" {
+		started := *run
+		started.Session = r.ID
+		if perr := s.putRun(t, started, "record session "+r.ID+" on the open run"); perr != nil {
+			return true, errors.Join(err, perr)
+		}
+		t.kids = append(t.kids, launch.Child{ID: r.ID, Title: launch.Title(b.ID, st), Status: "starting"})
+		if st == stage.Implement {
+			t.in.Implement++
+		}
+	}
+	if err == nil {
+		return true, nil
+	}
+	if r.ID != "" {
+		// The session exists; collect judges it (an undelivered prompt
+		// leaves it idle with no reply, which parks the bead).
+		s.say(b.ID, "  launch problem: %v", err)
+		return true, nil
+	}
+	rec := ledger.Record{Bead: b.ID, Stage: string(st), Start: run.Start, End: s.now(), Before: run.Before,
+		After: quotaOf(t.in.Reading), Retries: run.Retries,
+		Outcome: string(stage.NeedsHuman), Reason: fmt.Sprintf("could not launch the %s session: %v", st, err)}
+	if err := s.record(t, rec); err != nil {
+		return true, err
+	}
+	return true, s.deleteRun(t, b.ID)
+}
+
+// vanished records an open run whose session no longer exists as failed,
+// for a human to look at.
+func (s *scheduler) vanished(t *tick, bead string, run ledger.Run) error {
+	s.say(bead, "[%s] session %s is gone without a collected result", run.Stage, run.Session)
+	rec := ledger.Record{Bead: bead, Stage: run.Stage, Session: run.Session, Start: run.Start, End: s.now(),
+		Before: run.Before, After: quotaOf(t.in.Reading), Retries: run.Retries,
+		Outcome: string(stage.NeedsHuman), Reason: fmt.Sprintf("%s session %s disappeared before greenhouse collected its result", run.Stage, run.Session)}
+	if err := s.record(t, rec); err != nil {
+		return err
+	}
+	return s.deleteRun(t, bead)
+}
+
+func specOf(b plan.Bead) string {
+	var parts []string
+	if b.Acceptance != "" {
+		parts = append(parts, "Acceptance criteria:\n"+b.Acceptance)
+	}
+	if b.Design != "" {
+		parts = append(parts, "File plan:\n"+b.Design)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// launchReason is the scheduler's context for an st session: the verify log
+// for an implement retry, the rejection reason for learn.
+func launchReason(recs []ledger.Record, bead string, st stage.Stage) string {
+	last := ledger.Last(recs, bead)
+	switch {
+	case last == nil:
+	case st == stage.Implement && last.Outcome == string(stage.VerifyFail),
+		st == stage.Learn && last.Outcome == string(stage.Rejected):
+		return last.Reason
+	}
+	return ""
+}
+
+func (s *scheduler) branchExists(ctx context.Context, branch string) bool {
+	_, err := s.runner.Run(ctx, s.cfg.Repo, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+// verify runs the deterministic checks on bead's PR, rebased onto
+// VerifyBase in a scheduler-owned worktree, and records the verdict.
+func (s *scheduler) verify(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
+	n := ledger.LastPR(t.recs, b.ID)
+	if n == 0 {
+		s.say(b.ID, "[verify] no PR recorded for the bead; left for a human")
+		return false, nil
+	}
+	pr, err := s.gh.PR(ctx, n)
+	if err != nil {
+		return false, err
+	}
+	if pr.State != "OPEN" {
+		s.say(b.ID, "[verify] PR #%d is %s, not open; left for a human", n, pr.State)
+		return false, nil
+	}
+	retries := ledger.Retries(t.recs, b.ID)
+	if s.dry {
+		s.say(b.ID, "[verify] would verify PR #%d (%s rebased onto %s), %d/%d retries used",
+			n, pr.HeadRef, VerifyBase, retries, stage.MaxVerifyRetries)
+		return true, nil
+	}
+	start := s.now()
+	s.say(b.ID, "[verify] PR #%d (%s rebased onto %s)", n, pr.HeadRef, VerifyBase)
+	res, err := s.runVerify(ctx, b.ID, pr.HeadRef)
+	if err != nil {
+		return false, err
+	}
+	verify.Print(prefixWriter{s.out, "             "}, res)
+	ev := res.Event(n, retries)
+	return true, s.record(t, ledger.Record{Bead: b.ID, Stage: string(stage.Verify), Start: start, End: s.now(),
+		Before: quotaOf(t.in.Reading), After: quotaOf(t.in.Reading), Retries: retries,
+		Outcome: string(ev.Kind), Reason: ev.Reason, PR: n})
+}
+
+// runVerify checks out head in .greenhouse/verify/<bead>, rebases it onto
+// VerifyBase and runs verify there. A rebase conflict is a verify failure:
+// the PR cannot merge as it is.
+func (s *scheduler) runVerify(ctx context.Context, bead, head string) (verify.Result, error) {
+	dir := filepath.Join(s.store.Dir, "verify", bead)
+	git := func(dir string, args ...string) ([]byte, error) { return s.runner.Run(ctx, dir, "git", args...) }
+	if out, err := git(s.cfg.Repo, "fetch", "--quiet", "origin"); err != nil {
+		return verify.Result{}, fmt.Errorf("git fetch: %w: %s", err, out)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		if out, err := git(s.cfg.Repo, "worktree", "add", "--force", "--detach", dir, "origin/"+head); err != nil {
+			return verify.Result{}, fmt.Errorf("git worktree add: %w: %s", err, out)
+		}
+	} else if out, err := git(dir, "checkout", "--force", "--detach", "origin/"+head); err != nil {
+		return verify.Result{}, fmt.Errorf("git checkout: %w: %s", err, out)
+	}
+	if out, err := git(dir, "-c", "user.name=greenhouse", "-c", "user.email=greenhouse@invalid",
+		"rebase", VerifyBase); err != nil {
+		git(dir, "rebase", "--abort")
+		log := fmt.Sprintf("rebase onto %s failed: %v\n%s\nRebase the branch onto %s, resolve the conflicts and push.\n",
+			VerifyBase, err, strings.TrimSpace(string(out)), VerifyBase)
+		return verify.Result{Checks: []verify.Check{{Name: "rebase " + VerifyBase, Detail: err.Error()}}, Log: log}, nil
+	}
+	return verify.Run(ctx, s.runner, verify.Options{Dir: dir, Base: VerifyBase, Bead: bead,
+		Commands: s.cfg.Verify.Commands, Timeout: s.cfg.Verify.CommandTimeout()})
+}
+
+// review reads the human's verdict on bead's ready PR.
+func (s *scheduler) review(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
+	n := ledger.LastPR(t.recs, b.ID)
+	if n == 0 {
+		s.say(b.ID, "[review] no PR recorded for the bead; left for a human")
+		return false, nil
+	}
+	pr, err := s.gh.PR(ctx, n)
+	if err != nil {
+		return false, err
+	}
+	rec := ledger.Record{Bead: b.ID, Stage: string(stage.Review), Start: s.now(), End: s.now(),
+		Before: quotaOf(t.in.Reading), After: quotaOf(t.in.Reading), PR: n}
+	switch pr.State {
+	case "MERGED":
+		rec.Outcome = string(stage.Merged)
+	case "CLOSED":
+		rec.Outcome = string(stage.Rejected)
+		rec.Reason = pr.Reason
+		if rec.Reason == "" {
+			rec.Reason = fmt.Sprintf("PR #%d was closed without merging and without a review comment", n)
+		}
+	default:
+		s.say(b.ID, "[review] PR #%d is %s; waiting on the human", n, strings.ToLower(pr.State))
+		return false, nil
+	}
+	if last := ledger.Last(t.recs, b.ID); last != nil {
+		rec.Start = last.End
+	}
+	s.say(b.ID, "[review] PR #%d %s", n, strings.ToLower(pr.State))
+	return true, s.record(t, rec)
+}
+
+// prefixWriter indents every line written through it.
+type prefixWriter struct {
+	w      io.Writer
+	prefix string
+}
+
+func (p prefixWriter) Write(b []byte) (int, error) {
+	for line := range strings.Lines(string(b)) {
+		if _, err := io.WriteString(p.w, p.prefix+line); err != nil {
+			return 0, err
+		}
+	}
+	return len(b), nil
+}

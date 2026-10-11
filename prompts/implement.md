@@ -16,6 +16,10 @@ You work on branch `{{.Branch}}` in your own worktree.
 Fix what this log reports before anything else:
 
 {{.Reason}}
+
+Your branch already has the draft PR from that attempt. Fix it on this
+branch and push; do not open a new PR. Report `implement-done` with the
+same PR number.
 {{- end}}
 
 ## Steps
