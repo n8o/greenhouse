@@ -23,6 +23,24 @@ type FakeDeck struct {
 	ShowErr  error
 	OutErr   error
 	ChildErr error
+	Stopped  []string // session ids stopped, in order
+	StopErr  error
+}
+
+// Stop records id and marks it stopped in Kids.
+func (f *FakeDeck) Stop(_ context.Context, id string) error {
+	if f.StopErr != nil {
+		return f.StopErr
+	}
+	f.Stopped = append(f.Stopped, id)
+	for _, kids := range f.Kids {
+		for i := range kids {
+			if kids[i].ID == id {
+				kids[i].Status = "stopped"
+			}
+		}
+	}
+	return nil
 }
 
 // Launch records a and returns NextSession, echoing the pinned model and

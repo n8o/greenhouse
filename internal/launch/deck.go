@@ -26,6 +26,8 @@ type Deck interface {
 	Send(ctx context.Context, id, messageFile string) error
 	// Children lists the sub-sessions of parent with their live status.
 	Children(ctx context.Context, parent string) ([]Child, error)
+	// Stop stops a session's process; its worktree and tmux session stay.
+	Stop(ctx context.Context, id string) error
 }
 
 // LaunchArgs is one `agent-deck launch` call.
@@ -188,6 +190,11 @@ func (c *CLI) Output(ctx context.Context, id string) (Output, error) {
 func (c *CLI) Send(ctx context.Context, id, messageFile string) error {
 	_, err := c.exec(ctx, "session", "send", id, "-message-file", messageFile, "-q")
 	return err
+}
+
+// Stop runs `agent-deck session stop <id> -json`.
+func (c *CLI) Stop(ctx context.Context, id string) error {
+	return c.call(ctx, nil, "session", "stop", id, "-json")
 }
 
 // Children runs `agent-deck session children <parent> -json`.

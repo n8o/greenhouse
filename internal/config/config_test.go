@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/n8o/greenhouse/internal/stage"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,13 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if got := cfg.Stages["implement"]; got != (Stage{Model: "opus", Effort: "high", MaxTurns: 80}) {
 		t.Errorf("stages.implement = %+v", got)
 	}
+	if cfg.Timeout(stage.Implement) != 2*time.Hour || cfg.Run.TickInterval() != 5*time.Minute || cfg.Run.Parent != "" {
+		t.Errorf("run defaults: implement timeout %v, %+v", cfg.Timeout(stage.Implement), cfg.Run)
+	}
+	cfg.Stages["spec"] = Stage{Timeout: "45m"}
+	if cfg.Timeout(stage.Spec) != 45*time.Minute {
+		t.Errorf("stages.spec.timeout not applied: %v", cfg.Timeout(stage.Spec))
+	}
 }
 
 func TestLoadRejects(t *testing.T) {
@@ -94,6 +102,8 @@ func TestLoadRejects(t *testing.T) {
 		{"no effort", strings.Replace(minimal, "effort = \"medium\"\n", "", 1), `stages.spec.effort must be one of low, medium, high, xhigh, max, got ""`},
 		{"bad effort", strings.Replace(minimal, `effort = "high"`, `effort = "ultra"`, 1), `stages.implement.effort must be one of low, medium, high, xhigh, max, got "ultra"`},
 		{"no turns", strings.Replace(minimal, "max_turns = 20", "max_turns = 0", 1), "stages.spec.max_turns must be >= 1"},
+		{"bad stage timeout", strings.Replace(minimal, "max_turns = 20", "max_turns = 20\ntimeout = \"forever\"", 1), `stages.spec.timeout must be a positive duration`},
+		{"bad interval", minimal + "\n[run]\ninterval = \"0s\"\n", `run.interval must be a positive duration`},
 		{"bad toml", "plan_prefix = ", "config"},
 	}
 	for _, tt := range tests {

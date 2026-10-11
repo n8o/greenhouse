@@ -111,7 +111,7 @@ func (l *Launcher) Launch(ctx context.Context, req Request) (Run, error) {
 	defer os.Remove(file)
 
 	args := LaunchArgs{
-		Repo: l.Repo, Branch: req.Branch, NewBranch: true,
+		Repo: l.Repo, Branch: req.Branch, NewBranch: !req.ExistingBranch,
 		Title: Title(req.Bead, req.Stage), Group: Group, Parent: l.Parent,
 		Model: budget.Model, Effort: budget.Effort,
 		MessageFile: file,
@@ -193,22 +193,29 @@ func (l *Launcher) ownOutput(ctx context.Context, id, claudeID string) (string, 
 // final message must follow the result contract, or Result returns an error
 // wrapping ErrNoResult rather than a guessed event.
 func (l *Launcher) Result(ctx context.Context, id string, st stage.Stage) (ev stage.Event, done bool, err error) {
+	ev, _, done, err = l.Collect(ctx, id, st)
+	return ev, done, err
+}
+
+// Collect is Result that also returns the session's final message, so the
+// caller can look for a usage-limit stop in it whatever the event.
+func (l *Launcher) Collect(ctx context.Context, id string, st stage.Stage) (ev stage.Event, content string, done bool, err error) {
 	state, err := l.Deck.Show(ctx, id)
 	if err != nil {
-		return stage.Event{}, false, err
+		return stage.Event{}, "", false, err
 	}
 	if state.Busy() {
-		return stage.Event{}, false, nil
+		return stage.Event{}, "", false, nil
 	}
 	if state.Blocked() {
-		return stage.Event{}, true, fmt.Errorf("%w: session %s", ErrBlocked, id)
+		return stage.Event{}, "", true, fmt.Errorf("%w: session %s", ErrBlocked, id)
 	}
 	content, ok := l.ownOutput(ctx, id, state.ClaudeSessionID)
 	if !ok {
-		return stage.Event{}, true, fmt.Errorf("%w: session %s is %s with no reply of its own", ErrNoResult, id, state.Status)
+		return stage.Event{}, "", true, fmt.Errorf("%w: session %s is %s with no reply of its own", ErrNoResult, id, state.Status)
 	}
 	ev, err = ParseResult(st, content)
-	return ev, true, err
+	return ev, content, true, err
 }
 
 // Completion is the outcome of one finished stage session.
