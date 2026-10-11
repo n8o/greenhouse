@@ -88,6 +88,15 @@ paths first; commit with trailers; open the PR as a **draft**, stamped with the
 session; end with the `===AGENTDECK_DONE===` sentinel. Prompts are versioned
 files in `prompts/`, so a change to how the factory works is a reviewed diff.
 
+## Exceptions: the conductor (ADR-0006)
+
+The scheduler never guesses. Anything it can't route becomes `stage:parked`
+with a reason. An agent-deck **conductor** watches for parks and the ledger
+and notifies the human with the question and a drafted answer. It never moves
+beads, merges or launches stages. Routine work costs no tokens between
+sessions, and the conductor spends tokens only on surprises. The scheduler
+polls session state itself and needs no notify-daemon.
+
 ## Ledger
 
 One JSONL line per stage run in `.greenhouse/ledger.jsonl` (gitignored), with
