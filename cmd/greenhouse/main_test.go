@@ -64,7 +64,7 @@ func TestStatusErrors(t *testing.T) {
 		{"source fails", []string{"status", "-config", repoConfig}, &plan.Fake{Err: errors.New("bd down")}, 1, "bd down"},
 		{"stray arg", []string{"status", "extra"}, &plan.Fake{}, 2, "unexpected arguments"},
 		{"no command", nil, &plan.Fake{}, 2, "usage:"},
-		{"unknown command", []string{"tick"}, &plan.Fake{}, 2, `unknown command "tick"`},
+		{"unknown command", []string{"merge"}, &plan.Fake{}, 2, `unknown command "merge"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

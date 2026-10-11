@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,41 @@ func TestFakeIsASource(t *testing.T) {
 	var src Source = &Fake{Err: errors.New("down")}
 	if _, err := src.List(context.Background()); err == nil {
 		t.Error("want Fake.Err")
+	}
+}
+
+func TestReady(t *testing.T) {
+	dep := func(id string) []Dependency { return []Dependency{{DependsOn: id, Type: "blocks"}} }
+	beads := []Bead{
+		{ID: "p-1", Status: "closed"},
+		{ID: "p-2", Status: "open", Dependencies: dep("p-1")},
+		{ID: "p-3", Status: "open", Dependencies: dep("p-2")},
+		{ID: "p-4", Status: "open", Dependencies: dep("x-9")},
+		{ID: "p-5", Status: "in_progress"},
+		{ID: "p-6", Status: "closed", Labels: []string{"stage:verify"}}, // closed in its unmerged PR
+		{ID: "p-7", Status: "open", Dependencies: dep("p-6")},
+	}
+	for i, want := range []bool{false, true, false, false, false, false, false} {
+		if got := Ready(beads[i], beads); got != want {
+			t.Errorf("Ready(%s) = %v, want %v", beads[i].ID, got, want)
+		}
+	}
+}
+
+func TestBDSetStage(t *testing.T) {
+	var calls []string
+	b := &BD{Dir: "/r", Prefix: "p", run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "list" {
+			return []byte(`[{"id":"p-1","status":"open","labels":["factory:approved","stage:spec"]}]`), nil
+		}
+		return nil, nil
+	}}
+	if err := b.SetStage(context.Background(), "p-1", "implement"); err != nil {
+		t.Fatal(err)
+	}
+	want := "list --json --all --limit 0|label add p-1 stage:implement|label remove p-1 stage:spec"
+	if got := strings.Join(calls, "|"); got != want {
+		t.Errorf("calls %q\nwant  %q", got, want)
 	}
 }

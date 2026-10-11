@@ -16,12 +16,57 @@ import (
 // StagePrefix marks the label that records a bead's stage, e.g. "stage:spec".
 const StagePrefix = "stage:"
 
+// ApprovedLabel marks a bead the human released to the factory (ADR-0004).
+const ApprovedLabel = "factory:approved"
+
 // Bead is the part of a bd issue greenhouse uses.
 type Bead struct {
 	ID     string   `json:"id"`
 	Title  string   `json:"title"`
 	Status string   `json:"status"`
 	Labels []string `json:"labels"`
+	// Description holds the bead's "Done when".
+	Description string `json:"description"`
+	// Acceptance and Design are what the spec stage records on the bead.
+	Acceptance   string       `json:"acceptance_criteria"`
+	Design       string       `json:"design"`
+	Dependencies []Dependency `json:"dependencies"`
+}
+
+// Dependency is one edge of `bd list --json`: the bead waits on DependsOn.
+type Dependency struct {
+	DependsOn string `json:"depends_on_id"`
+	Type      string `json:"type"`
+}
+
+// Approved reports whether the bead carries ApprovedLabel.
+func (b Bead) Approved() bool { return slices.Contains(b.Labels, ApprovedLabel) }
+
+// Done reports whether the bead is finished: closed, and not still moving
+// through the factory. An implement session closes its own bead inside its
+// PR (ADR-0005), and in a shared bd database that close shows up before the
+// PR merges; a stage label other than stage:done means it is not done yet.
+func (b Bead) Done() bool {
+	return b.Status == "closed" && (b.Stage() == "" || b.Stage() == "done")
+}
+
+// Ready reports whether b can start: it is open, and every bead it is blocked
+// by is Done. A blocker missing from beads counts as open, so an unknown
+// dependency holds the bead rather than releasing it.
+func Ready(b Bead, beads []Bead) bool {
+	if b.Status != "open" {
+		return false
+	}
+	for _, d := range b.Dependencies {
+		if d.Type != "" && d.Type != "blocks" {
+			continue
+		}
+		i := slices.IndexFunc(beads, func(x Bead) bool { return x.ID == d.DependsOn })
+		if i < 0 || !beads[i].Done() {
+			return false
+		}
+	}
+	return true
 }
 
 // Stage returns the value of the bead's stage label, or "" if it has none.
@@ -40,7 +85,17 @@ type Source interface {
 	List(ctx context.Context) ([]Bead, error)
 }
 
-// BD is the Source backed by the bd CLI.
+// Store is a Source that can also move a bead. Stage labels live only in the
+// local bd database; the export strips them (ADR-0005).
+type Store interface {
+	Source
+	// SetStage makes "stage:<st>" the bead's only stage label.
+	SetStage(ctx context.Context, id, st string) error
+	// Close closes the bead with reason.
+	Close(ctx context.Context, id, reason string) error
+}
+
+// BD is the Store backed by the bd CLI.
 type BD struct {
 	Dir    string // repository bd runs in
 	Prefix string // plan prefix; beads "<Prefix>-<n>" belong to the plan
@@ -56,11 +111,7 @@ func NewBD(dir, prefix string) *BD {
 
 // List runs `bd list --json --all --limit 0` and keeps the plan's beads.
 func (b *BD) List(ctx context.Context) ([]Bead, error) {
-	run := b.run
-	if run == nil {
-		run = execBD
-	}
-	out, err := run(ctx, b.Dir, "list", "--json", "--all", "--limit", "0")
+	out, err := b.runner()(ctx, b.Dir, "list", "--json", "--all", "--limit", "0")
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +120,50 @@ func (b *BD) List(ctx context.Context) ([]Bead, error) {
 		return nil, err
 	}
 	return Filter(all, b.Prefix), nil
+}
+
+// SetStage runs `bd label add` for the new stage label, then `bd label
+// remove` for every other stage label. Both are skipped when already done, so
+// a retry after a crash finishes the move.
+func (b *BD) SetStage(ctx context.Context, id, st string) error {
+	run := b.runner()
+	beads, err := b.List(ctx)
+	if err != nil {
+		return err
+	}
+	var labels []string
+	for _, x := range beads {
+		if x.ID == id {
+			labels = x.Labels
+		}
+	}
+	want := StagePrefix + st
+	if !slices.Contains(labels, want) {
+		if _, err := run(ctx, b.Dir, "label", "add", id, want); err != nil {
+			return err
+		}
+	}
+	for _, l := range labels {
+		if strings.HasPrefix(l, StagePrefix) && l != want {
+			if _, err := run(ctx, b.Dir, "label", "remove", id, l); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Close runs `bd close <id> --reason <reason>`.
+func (b *BD) Close(ctx context.Context, id, reason string) error {
+	_, err := b.runner()(ctx, b.Dir, "close", id, "--reason", reason)
+	return err
+}
+
+func (b *BD) runner() func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if b.run != nil {
+		return b.run
+	}
+	return execBD
 }
 
 func execBD(ctx context.Context, dir string, args ...string) ([]byte, error) {

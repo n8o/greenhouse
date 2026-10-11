@@ -1,18 +1,27 @@
 // Command greenhouse is the factory's scheduler (see docs/DESIGN.md).
-// Bootstrapping: the subcommands arrive with plan steps gr-boot-1..6.
+// `tick` and `run` are the scheduler; everything else reads.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/n8o/greenhouse/internal/config"
 	"github.com/n8o/greenhouse/internal/doctor"
+	"github.com/n8o/greenhouse/internal/gate"
+	"github.com/n8o/greenhouse/internal/launch"
+	"github.com/n8o/greenhouse/internal/ledger"
 	"github.com/n8o/greenhouse/internal/plan"
+	"github.com/n8o/greenhouse/internal/verify"
 )
 
 const usage = `usage: greenhouse <command> [flags]
@@ -20,6 +29,8 @@ const usage = `usage: greenhouse <command> [flags]
 commands:
   status   print every bead in the plan with its stage
   doctor   check this host can run greenhouse unattended (read-only)
+  tick     run one scheduler pass (-dry-run prints the decisions only)
+  run      run ticks every run.interval, holding .greenhouse/run.lock
 `
 
 // newSource builds the plan adapter; tests replace it with a plan.Fake.
@@ -31,11 +42,26 @@ func bdSource(cfg config.Config) plan.Source { return plan.NewBD(cfg.Repo, cfg.P
 type deps struct {
 	source newSource
 	host   doctor.Env
+	// tools builds the scheduler's adapters for cfg.
+	tools func(cfg config.Config) adapters
+}
+
+func systemTools(cfg config.Config) adapters {
+	return adapters{
+		plan:   plan.NewBD(cfg.Repo, cfg.PlanPrefix),
+		deck:   launch.NewCLI(),
+		gh:     &ghCLI{Repo: cfg.Repo},
+		probe:  gate.NewCLI(cfg.Repo),
+		runner: verify.Exec{},
+		now:    time.Now,
+	}
 }
 
 func main() {
-	d := deps{source: bdSource, host: doctor.System()}
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, d))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	d := deps{source: bdSource, host: doctor.System(), tools: systemTools}
+	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr, d))
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) int {
@@ -48,6 +74,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) i
 		return status(ctx, args[1:], stdout, stderr, d.source)
 	case "doctor":
 		return runDoctor(ctx, args[1:], stdout, stderr, d.host)
+	case "tick", "run":
+		return schedule(ctx, args[0], args[1:], stdout, stderr, d.tools)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -116,4 +144,79 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer, hos
 		return 1
 	}
 	return 0
+}
+
+// schedule is `greenhouse tick` (one pass) and `greenhouse run` (a pass
+// every interval until interrupted). Both hold the run lock, except a dry
+// run, which writes nothing.
+func schedule(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer, tools func(config.Config) adapters) int {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", config.DefaultPath, "path to greenhouse.toml")
+	dry := fs.Bool("dry-run", false, "print each decision (bead, stage, event, actions, gate verdicts) and carry out none")
+	interval := fs.Duration("interval", 0, "pause between ticks (run only; default run.interval)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "greenhouse %s: unexpected arguments %q\n", cmd, fs.Args())
+		return 2
+	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "greenhouse %s: %v\n", cmd, err)
+		return 1
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return fail(err)
+	}
+	s, err := newScheduler(cfg, tools(cfg), stdout, *dry)
+	if err != nil {
+		return fail(err)
+	}
+	if !*dry {
+		unlock, err := lock(filepath.Join(s.store.Dir, "run.lock"))
+		if err != nil {
+			return fail(err)
+		}
+		defer unlock()
+	}
+	if cmd == "tick" {
+		if err := s.Tick(ctx); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+	every := cfg.Run.TickInterval()
+	if *interval > 0 {
+		every = *interval
+	}
+	for {
+		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
+			// A failed tick is reported and retried; the next one converges.
+			fmt.Fprintf(stderr, "greenhouse run: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-time.After(every):
+		}
+	}
+}
+
+// newScheduler wires a scheduler for cfg. Stage sessions are launched under,
+// and polled through, run.parent or else the agent-deck session greenhouse
+// runs in.
+func newScheduler(cfg config.Config, a adapters, out io.Writer, dry bool) (*scheduler, error) {
+	parent := cfg.Run.Parent
+	if parent == "" {
+		parent = os.Getenv("AGENTDECK_INSTANCE_ID")
+	}
+	if parent == "" {
+		return nil, errors.New("no parent session: set run.parent in greenhouse.toml or run inside agent-deck")
+	}
+	l := launch.New(cfg, a.deck)
+	l.Parent = parent
+	return &scheduler{adapters: a, cfg: cfg, launcher: l, store: ledger.Open(cfg.Repo),
+		local: time.Local, out: out, dry: dry}, nil
 }

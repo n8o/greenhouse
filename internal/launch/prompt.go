@@ -25,6 +25,9 @@ type Request struct {
 	Stage  stage.Stage
 	// Branch is the worktree branch; "" means DefaultBranch.
 	Branch string
+	// ExistingBranch launches on Branch as it is instead of creating it: an
+	// implement retry continues the branch of its open PR.
+	ExistingBranch bool
 }
 
 // DefaultBranch is the worktree branch of a stage run that names none.

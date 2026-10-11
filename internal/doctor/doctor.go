@@ -34,6 +34,9 @@ type Result struct {
 	OK     bool
 	Detail string
 	Fix    string // how to make a failing check pass; "" when it passes
+	// Warn marks a check that is not OK but does not stop greenhouse from
+	// running unattended; Failed ignores it.
+	Warn bool
 }
 
 // Env is the host doctor inspects. Tests replace it.
@@ -112,9 +115,9 @@ func Run(ctx context.Context, env Env, configPath string) []Result {
 	return append(rs, Models(cfg))
 }
 
-// Failed reports whether any check failed.
+// Failed reports whether any check failed. Warnings do not count.
 func Failed(rs []Result) bool {
-	return slices.ContainsFunc(rs, func(r Result) bool { return !r.OK })
+	return slices.ContainsFunc(rs, func(r Result) bool { return !r.OK && !r.Warn })
 }
 
 // Print writes rs as one line per check, with the fix under each failure.
@@ -125,7 +128,10 @@ func Print(w io.Writer, rs []Result) {
 	}
 	for _, r := range rs {
 		verdict := "PASS"
-		if !r.OK {
+		switch {
+		case !r.OK && r.Warn:
+			verdict = "WARN"
+		case !r.OK:
 			verdict = "FAIL"
 		}
 		fmt.Fprintf(w, "%s  %-*s  %s\n", verdict, width, r.Name, r.Detail)
@@ -226,12 +232,13 @@ func FreshUsage(out []byte, now time.Time) bool {
 	return ok
 }
 
-// NotifyDaemon checks `agent-deck inbox writer-status --json`: without a
-// running notify-daemon nothing records session transitions, so completion
-// events never reach greenhouse (ADR-0003).
+// NotifyDaemon checks `agent-deck inbox writer-status --json`. The scheduler
+// polls session state itself (ADR-0006), so a missing daemon is only a
+// warning: it costs the human laptop notifications via `remote drain`, not
+// completions.
 func NotifyDaemon(out []byte, runErr error) Result {
-	r := Result{Name: "notify-daemon",
-		Fix: "run `agent-deck notify-daemon` and keep it running (a login item or service on an always-on host)"}
+	r := Result{Name: "notify-daemon", Warn: true,
+		Fix: "optional: run `agent-deck notify-daemon` for laptop notifications (greenhouse polls completions without it)"}
 	var st struct {
 		Running *bool  `json:"running"`
 		Detail  string `json:"detail"`
@@ -245,7 +252,7 @@ func NotifyDaemon(out []byte, runErr error) Result {
 	}
 	switch {
 	case *st.Running:
-		r.OK, r.Fix = true, ""
+		r.OK, r.Warn, r.Fix = true, false, ""
 		r.Detail = "a notify-daemon is recording session transitions"
 	case st.Detail != "":
 		r.Detail = "not running: " + st.Detail

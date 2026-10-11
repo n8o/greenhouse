@@ -36,6 +36,33 @@ type Config struct {
 	Quota      Quota            `toml:"quota"`
 	Verify     Verify           `toml:"verify"`
 	Stages     map[string]Stage `toml:"stages"`
+	Run        Run              `toml:"run"`
+}
+
+// Run configures the scheduler loop (`greenhouse tick` / `run`).
+type Run struct {
+	// Parent is the agent-deck session stage sessions are launched under and
+	// polled through (`session children`). "" means $AGENTDECK_INSTANCE_ID,
+	// the session greenhouse itself runs in.
+	Parent string `toml:"parent"`
+	// Interval is the pause between ticks of `greenhouse run`, as a Go
+	// duration.
+	Interval string `toml:"interval"`
+}
+
+// TickInterval returns Run.Interval parsed; Validate has checked it.
+func (r Run) TickInterval() time.Duration {
+	d, _ := time.ParseDuration(r.Interval)
+	return d
+}
+
+// DefaultTimeouts is the hard wall-clock limit of each LLM stage session
+// when its stages.<name>.timeout is unset. A session past its limit is
+// stopped and counts as failed; max_turns is only advisory.
+var DefaultTimeouts = map[stage.Stage]time.Duration{
+	stage.Spec:      30 * time.Minute,
+	stage.Implement: 2 * time.Hour,
+	stage.Learn:     30 * time.Minute,
 }
 
 // WIP caps how much work is in flight (DESIGN.md "Gates").
@@ -72,6 +99,17 @@ type Stage struct {
 	Model    string `toml:"model"`
 	Effort   string `toml:"effort"`
 	MaxTurns int    `toml:"max_turns"`
+	// Timeout is the session's hard wall-clock limit, as a Go duration;
+	// "" means DefaultTimeouts.
+	Timeout string `toml:"timeout"`
+}
+
+// Timeout returns the wall-clock limit of an st session.
+func (c Config) Timeout(st stage.Stage) time.Duration {
+	if d, err := time.ParseDuration(c.Stages[string(st)].Timeout); err == nil && d > 0 {
+		return d
+	}
+	return DefaultTimeouts[st]
 }
 
 // Efforts are the reasoning efforts a Claude session accepts
@@ -85,6 +123,7 @@ func Default() Config {
 		WIP:    WIP{Implement: 1, OpenPRs: 3},
 		Quota:  Quota{FiveHourMax: 0.8, WeeklyShare: 0.5},
 		Verify: Verify{Timeout: "10m"},
+		Run:    Run{Interval: "5m"},
 	}
 }
 
@@ -152,6 +191,9 @@ func (c Config) Validate() error {
 	if d, err := time.ParseDuration(c.Verify.Timeout); err != nil || d <= 0 {
 		errs = append(errs, fmt.Errorf("verify.timeout must be a positive duration like \"10m\", got %q", c.Verify.Timeout))
 	}
+	if d, err := time.ParseDuration(c.Run.Interval); err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("run.interval must be a positive duration like \"5m\", got %q", c.Run.Interval))
+	}
 	for i, cmd := range c.Verify.Commands {
 		if strings.TrimSpace(cmd) == "" {
 			errs = append(errs, fmt.Errorf("verify.commands[%d] is empty", i))
@@ -180,6 +222,9 @@ func (c Config) Validate() error {
 		}
 		if s.MaxTurns < 1 {
 			errs = append(errs, fmt.Errorf("stages.%s.max_turns must be >= 1, got %d", name, s.MaxTurns))
+		}
+		if d, err := time.ParseDuration(s.Timeout); s.Timeout != "" && (err != nil || d <= 0) {
+			errs = append(errs, fmt.Errorf("stages.%s.timeout must be a positive duration like \"2h\", got %q", name, s.Timeout))
 		}
 	}
 	return errors.Join(errs...)

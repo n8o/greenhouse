@@ -5,7 +5,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
 
     sys = softwareSystem "greenhouse" {
 
-      cli = component "cli" "greenhouse command: run / tick / status / report." {
+      cli = component "cli" "greenhouse command and scheduler: tick / run (lock, ledger, gh adapter) / status / doctor." {
         properties { paths "cmd/greenhouse/**" }
       }
       config = component "config" "greenhouse.toml: repo, plan, caps, quota thresholds, verify commands." {
@@ -20,7 +20,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       gate = component "gate" "Quota / WIP / open-PR gates: pure decisions over a usage reading, counts and the time, plus read-only agent-deck/gh probes." {
         properties { paths "internal/gate/**" }
       }
-      doctor = component "doctor" "Read-only host checks: statusLine ingest, notify-daemon, tools, MCP approval, stage models." {
+      doctor = component "doctor" "Read-only host checks: statusLine ingest, notify-daemon (a warning), tools, MCP approval, stage models." {
         properties { paths "internal/doctor/**" }
       }
       launch = component "launch" "Starts stage sessions via agent-deck and collects their completions." {
@@ -29,7 +29,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       verify = component "verify" "Runs configured deterministic checks on a PR branch." {
         properties { paths "internal/verify/**" }
       }
-      ledger = component "ledger" "Append-only JSONL of stage runs + report roll-up." {
+      ledger = component "ledger" "Local run state under .greenhouse/: append-only ledger.jsonl of stage runs, open runs, usage-limit park." {
         properties { paths "internal/ledger/**" }
       }
       prompts = component "prompts" "Versioned stage prompt templates." {

@@ -28,17 +28,27 @@ commands = [
 # deterministic and review is the human, so they have none. Model and effort
 # are always pinned: an unpinned session inherits the user's Claude Code
 # default, which may be the priciest model at the highest effort.
+# timeout is the hard wall-clock limit of a session (max_turns is advisory):
+# past it the session is stopped and the run counts as failed.
 [stages.spec]
 model = "sonnet"
 effort = "medium"
 max_turns = 20
+timeout = "30m"
 
 [stages.implement]
 model = "opus"
 effort = "high"
 max_turns = 80
+timeout = "2h"
 
 [stages.learn]
 model = "sonnet"
 effort = "low"
 max_turns = 15
+timeout = "30m"
+
+[run] # the scheduler loop (greenhouse tick / run)
+interval = "5m" # pause between ticks of `greenhouse run`
+# parent: the agent-deck session stage sessions run under and are polled
+# through; unset means $AGENTDECK_INSTANCE_ID (the session greenhouse runs in).

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,8 +82,11 @@ func TestNotifyDaemon(t *testing.T) {
 			if r.OK != tt.ok || !strings.Contains(r.Detail, tt.detail) {
 				t.Errorf("got %+v, want ok=%v detail~%q", r, tt.ok, tt.detail)
 			}
-			if !r.OK && !strings.Contains(r.Fix, "agent-deck notify-daemon") {
-				t.Errorf("fix %q", r.Fix)
+			if !r.OK && (!r.Warn || !strings.Contains(r.Fix, "agent-deck notify-daemon")) {
+				t.Errorf("want a warning with a fix, got %+v", r)
+			}
+			if Failed([]Result{r}) {
+				t.Errorf("a missing notify-daemon must not fail doctor (ADR-0006)")
 			}
 		})
 	}
@@ -224,7 +228,8 @@ func TestRun(t *testing.T) {
 			if got := names(rs, false); strings.Join(got, ",") != strings.Join(tt.failed, ",") {
 				t.Errorf("failed %v, want %v: %+v", got, tt.failed, rs)
 			}
-			if Failed(rs) != (len(tt.failed) > 0) {
+			// notify-daemon is a warning (ADR-0006): reported, never a failure.
+			if Failed(rs) != slices.ContainsFunc(tt.failed, func(n string) bool { return n != "notify-daemon" }) {
 				t.Errorf("Failed = %v", Failed(rs))
 			}
 		})
