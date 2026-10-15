@@ -69,7 +69,11 @@ func (g *ghCLI) EnsureLabel(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// gh prints nothing at all, not [], when --search matches no label.
 	var labels []ghLabel
+	if len(bytes.TrimSpace(out)) == 0 {
+		out = []byte("[]")
+	}
 	if err := json.Unmarshal(out, &labels); err != nil {
 		return fmt.Errorf("parse gh label list --json: %w", err)
 	}
