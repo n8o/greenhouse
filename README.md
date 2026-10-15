@@ -10,4 +10,10 @@ marked ready only once it is validated. A human merges.
 - Decisions: [.nugit/decisions/](.nugit/decisions/)
 - Plan (it builds itself): `.beads/plans/gr-boot.jsonl`
 
+`greenhouse report [--json]` rolls the local ledger up: quota per merged PR,
+cycle time, park rate, retries, rejections, and whether stage sessions load
+scoped memory (`nugit context`) and whether that helps. It compares outcomes
+only once each group has `-min-sample` beads (default 5); below that it
+prints the counts and says there are too few runs to compare.
+
 Status: pre-alpha, bootstrapping. Built by hand up to gr-boot-6, then by itself.

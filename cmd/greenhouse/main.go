@@ -1,5 +1,6 @@
 // Command greenhouse is the factory's scheduler (see docs/DESIGN.md).
-// `tick` and `run` are the scheduler; everything else reads.
+// `tick` and `run` are the scheduler; everything else (status, doctor,
+// report) reads.
 package main
 
 import (
@@ -31,6 +32,8 @@ commands:
   doctor   check this host can run greenhouse unattended (read-only)
   tick     run one scheduler pass (-dry-run prints the decisions only)
   run      run ticks every run.interval, holding .greenhouse/run.lock
+  report   roll up the ledger: quota per PR, cycle time, parks, retries,
+           rejects, and whether scoped memory is used and helps (--json)
 `
 
 // newSource builds the plan adapter; tests replace it with a plan.Fake.
@@ -44,6 +47,8 @@ type deps struct {
 	host   doctor.Env
 	// tools builds the scheduler's adapters for cfg.
 	tools func(cfg config.Config) adapters
+	// git runs the git reads of `greenhouse report`; nil means verify.Exec.
+	git verify.Runner
 }
 
 func systemTools(cfg config.Config) adapters {
@@ -60,7 +65,7 @@ func systemTools(cfg config.Config) adapters {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	d := deps{source: bdSource, host: doctor.System(), tools: systemTools}
+	d := deps{source: bdSource, host: doctor.System(), tools: systemTools, git: verify.Exec{}}
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr, d))
 }
 
@@ -76,6 +81,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) i
 		return runDoctor(ctx, args[1:], stdout, stderr, d.host)
 	case "tick", "run":
 		return schedule(ctx, args[0], args[1:], stdout, stderr, d.tools)
+	case "report":
+		return runReport(ctx, args[1:], stdout, stderr, d.git)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

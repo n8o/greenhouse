@@ -1,0 +1,6 @@
+{"time":"2026-09-29T20:40:30.629484Z","source":"cli","branch":"feature/gr-boot-1","path":"cmd/greenhouse/main.go","task":"gr-boot-1 skeleton","component":"cli","budget_tokens":12000,"estimated_tokens":110,"truncated":false,"decisions":0,"lessons":0,"references":0,"glossary":0,"working_memory":0,"path_history":1,"spec":false,"dropped":0}
+{"time":"2026-09-30T01:50:12Z","source":"hook","agent_session":"abc-123","tool":"Edit","covered":true,"covered_by":"agent_session","path":"internal/stage/stage.go","component":"stage","budget_tokens":0,"estimated_tokens":0,"truncated":false,"decisions":0,"lessons":0,"references":0,"glossary":0,"working_memory":0,"path_history":0,"spec":false,"dropped":0}
+{"time":"2026-09-30T02:13:44Z","source":"cli","branch":
+not json at all
+
+{"time":"2026-09-30T03:00:00Z","source":"mcp","session":"cc-1","agent_session":"abc-123","path":"docs/x.md","component":"","decisions":1,"lessons":1,"references":1,"glossary":1,"working_memory":1,"path_history":1,"spec":true,"future_field":{"nested":[1,2]}}
