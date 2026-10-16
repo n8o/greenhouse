@@ -112,7 +112,7 @@ func Run(ctx context.Context, r Runner, o Options) (Result, error) {
 	if len(bad) > 0 {
 		detail := strings.Join(bad, "; ")
 		res.Checks = append(res.Checks, Check{Name: PlanScopeName, Detail: detail})
-		res.Log = bound(fmt.Sprintf("%s failed: %s\nA PR may change only the line of its own bead (%s) under .beads/plans/, and only to close it (ADR-0005). Restore the other lines with `git checkout %s -- .beads/plans/` and re-add only your bead's line.\n",
+		res.Log = bound(fmt.Sprintf("%s failed: %s\nA PR may change only the line of its own bead (%s) under .beads/plans/, and only to close it, optionally recording its spec: acceptance_criteria, design, notes (ADR-0005, ADR-0008). Restore the other lines with `git checkout %s -- .beads/plans/` and re-add only your bead's line.\n",
 			PlanScopeName, detail, o.Bead, o.Base), "", maxLog)
 		return res, nil
 	}

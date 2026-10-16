@@ -53,7 +53,8 @@ the plan.
 4. **One PR, one bead line.** A stage session's PR may change only its own
    bead's line in `.beads/plans/`. The verify stage enforces this
    deterministically (gr-boot-5). Plan edits (new steps, re-scoping) are
-   separate human PRs.
+   separate human PRs. (Amended by ADR-0008: the PR may also record its own
+   bead's spec — `acceptance_criteria`, `design`, `notes`.)
 5. **One stable line per bead, one file per plan** (`nugit plan normalize
    -split`), so concurrent steps produce disjoint hunks that git merges
    without help.

@@ -47,6 +47,13 @@ func TestPlanScope(t *testing.T) {
 		{"own bead untouched", openLine + otherLine, openLine + otherLine, []string{"gr-boot-5: not closed by this PR"}},
 		{"reopens a closed bead", closedLine, openLine, []string{"gr-boot-5: was already closed"}},
 		{"unparseable line", openLine, closedLine + "{oops\n", []string{"unparseable line"}},
+		{"own bead records its spec", openLine + otherLine, strings.Replace(closedLine, `"V"`, `"V","acceptance_criteria":"- go test passes","design":"scope.go: allow spec","notes":"n"`, 1) + otherLine, nil},
+		{"own bead's spec revised", strings.Replace(openLine, `"V"`, `"V","design":"old"`, 1), strings.Replace(closedLine, `"V"`, `"V","design":"new"`, 1), nil},
+		{"spec without closing", openLine, strings.Replace(openLine, `"V"`, `"V","design":"d"`, 1), []string{"gr-boot-5: changed without closing"}},
+		{"another bead's spec", openLine + otherLine, closedLine + strings.Replace(otherLine, `"L"`, `"L","acceptance_criteria":"a","design":"d"`, 1), []string{"gr-boot-6: changed (only gr-boot-5 may change)"}},
+		{"spec plus title", openLine, strings.Replace(closedLine, `"V"`, `"W","design":"d"`, 1), []string{"gr-boot-5: plan fields changed: title"}},
+		{"spec plus priority", openLine, strings.Replace(closedLine, `"V"`, `"V","design":"d","priority":1`, 1), []string{"gr-boot-5: plan fields changed: priority"}},
+		{"spec plus description", openLine, strings.Replace(closedLine, `"V"`, `"V","notes":"n","description":"x"`, 1), []string{"gr-boot-5: plan fields changed: description"}},
 		{"names every offender", openLine + otherLine, closedLine + strings.Replace(otherLine, "open", "closed", 1) + `{"id":"gr-boot-9"}` + "\n", []string{"gr-boot-6", "gr-boot-9"}},
 	}
 	for _, tt := range tests {

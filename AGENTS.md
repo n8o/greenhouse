@@ -22,7 +22,8 @@ scripts/beads-export.sh                    # regenerate .beads/plans/ — never 
 **Keep commits cheap (ADR-0005).** Git carries the plan, not the run:
 - Never commit a bead's in-progress state or stage labels; the export strips them.
 - Your step's PR closes its own bead. Merge means closed; there are no follow-up bead commits.
-- Your PR changes only your bead's line in `.beads/plans/`. If the export
+- Your PR changes only your bead's line in `.beads/plans/`: closing it, plus
+  its spec fields (`acceptance_criteria`, `design`, `notes`, ADR-0008). If the export
   touched other lines (another session's local state), restore them with
   `git checkout -- <file>` and re-add only your line.
 

@@ -30,7 +30,8 @@ same PR number.
    `keywords:`), with at most one `decision:` per commit.
 4. Close only your own bead, inside this PR (ADR-0005): if the repo has
    `.beads/plans/`, run `bd close {{.Bead}} --reason "this PR"` and
-   `scripts/beads-export.sh`, then commit **only the {{.Bead}} line**. Restore
+   `scripts/beads-export.sh`, then commit **only the {{.Bead}} line** (closed,
+   with its spec fields `acceptance_criteria`/`design`/`notes`; ADR-0008). Restore
    every other changed line with `git checkout`. Never commit in-progress
    state or stage labels.
 5. Push and open the PR **as a draft**: `gh pr create --draft`. End its body
