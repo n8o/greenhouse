@@ -23,9 +23,10 @@ marked ready for review only after it is validated. A human merges. The first pr
    and inbox. greenhouse adds no session machinery of its own. (ADR-0003)
 4. **Git carries the plan, not the run.** A bead's stage is a label in the
    *local* bd database, never exported. Git changes only when the plan or a
-   step's completion changes, and a step closes inside its own PR. Killing the
+   step's completion changes, and a step closes inside its own PR, which may
+   also carry that step's spec (acceptance criteria, design, notes). Killing the
    scheduler loses nothing: run state can be rebuilt from bd, agent-deck, `gh`
-   and the ledger. (ADR-0005)
+   and the ledger. (ADR-0005, ADR-0008)
 5. **Intake is only approved beads, and a human merges.** No untrusted text (a
    stranger's issue or a PR comment) reaches an agent as instructions.
    Nothing auto-merges. (ADR-0004)

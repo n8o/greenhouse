@@ -19,10 +19,18 @@ const PlanDir = ".beads/plans/"
 // stamps it when the bead first goes in progress, and the export keeps it.
 var closeFields = []string{"status", "close_reason", "closed_at", "closed_by", "started_at"}
 
+// specFields are the spec a bead's own PR may add or change alongside closing
+// it (ADR-0008): the spec stage records acceptance_criteria and design with
+// `bd update --acceptance --design`, and notes is the bead's free-form spec
+// annotation. They are plan (what was agreed to build), not run state, and
+// only the bead's own PR touches its line. Another bead's spec fields still
+// may not change.
+var specFields = []string{"acceptance_criteria", "design", "notes"}
+
 // CheckPlanScope compares the PR's diff under .beads/plans/ with the merge
 // base and returns one message per violation, naming the bead ids. It
 // passes (returns nil) only if the sole change is bead's own line, closing
-// it. The error is non-nil only when git could not answer.
+// it and optionally recording its spec. The error is non-nil only when git could not answer.
 func CheckPlanScope(ctx context.Context, r Runner, dir, base, bead string) ([]string, error) {
 	git := func(args ...string) (string, error) {
 		out, err := r.Run(ctx, dir, "git", args...)
@@ -124,7 +132,8 @@ func canon(b map[string]any) []byte {
 	return out
 }
 
-// notClose returns why cur is not just old closed, or "" if it is.
+// notClose returns why cur is not just old closed (with its spec recorded),
+// or "" if it is.
 func notClose(old, cur map[string]any) string {
 	if old["status"] == "closed" {
 		return "was already closed, so it may not change"
@@ -134,7 +143,7 @@ func notClose(old, cur map[string]any) string {
 	}
 	var plan []string
 	for _, k := range slices.Sorted(maps.Keys(union(old, cur))) {
-		if slices.Contains(closeFields, k) {
+		if slices.Contains(closeFields, k) || slices.Contains(specFields, k) {
 			continue
 		}
 		if !bytes.Equal(canon(map[string]any{k: old[k]}), canon(map[string]any{k: cur[k]})) {
