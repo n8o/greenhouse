@@ -22,7 +22,11 @@ type Request struct {
 	// Reason is context from the scheduler: the verify log on an implement
 	// retry, or the rejection reason for learn (required there).
 	Reason string
-	Stage  stage.Stage
+	// PR is the rejected pull request learn studies (required there), and
+	// HeadRef its branch, which may be gone after the close.
+	PR      int
+	HeadRef string
+	Stage   stage.Stage
 	// Branch is the worktree branch; "" means DefaultBranch.
 	Branch string
 	// ExistingBranch launches on Branch as it is instead of creating it: an
@@ -68,6 +72,9 @@ var eventDocs = map[stage.EventKind]EventDoc{
 func Render(dir string, req Request, maxTurns int) (string, error) {
 	if req.Stage == stage.Learn && req.Reason == "" {
 		return "", fmt.Errorf("render: learn needs the rejection reason")
+	}
+	if req.Stage == stage.Learn && req.PR <= 0 {
+		return "", fmt.Errorf("render: learn needs the rejected PR")
 	}
 	return render(dir, string(req.Stage)+".md", req, maxTurns)
 }

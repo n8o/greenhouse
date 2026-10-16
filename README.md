@@ -10,6 +10,11 @@ marked ready only once it is validated. A human merges.
 - Decisions: [.nugit/decisions/](.nugit/decisions/)
 - Plan (it builds itself): `.beads/plans/gr-boot.jsonl`
 
+When the human closes a PR unmerged, the review or close comment is
+recorded as the reason and a learn session proposes a nugit lesson
+(`status: proposed`) on its own draft PR. greenhouse checks that PR
+deterministically before it accepts it; the human ratifies the lesson.
+
 `greenhouse report [--json]` rolls the local ledger up: quota per merged PR,
 cycle time, park rate, retries, rejections, and whether stage sessions load
 scoped memory (`nugit context`) and whether that helps. It compares outcomes

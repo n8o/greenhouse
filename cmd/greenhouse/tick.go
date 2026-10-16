@@ -14,6 +14,7 @@ import (
 	"github.com/n8o/greenhouse/internal/config"
 	"github.com/n8o/greenhouse/internal/gate"
 	"github.com/n8o/greenhouse/internal/launch"
+	"github.com/n8o/greenhouse/internal/learncheck"
 	"github.com/n8o/greenhouse/internal/ledger"
 	"github.com/n8o/greenhouse/internal/plan"
 	"github.com/n8o/greenhouse/internal/stage"
@@ -293,6 +294,17 @@ func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error 
 	if rec.Outcome == "" {
 		rec.Outcome, rec.Reason, rec.PR = string(ev.Kind), ev.Reason, ev.PR
 	}
+	if st == stage.Learn && rec.Outcome == string(stage.LearnDone) {
+		n, bad, err := s.checkLearn(ctx, id)
+		if err != nil {
+			return err // nothing is recorded yet; the next tick checks again
+		}
+		if bad != nil {
+			rec.Outcome, rec.Reason = string(stage.NeedsHuman), "the learn session reported learn-done, but its PR fails the lesson check: "+bad.Error()
+		} else {
+			rec.PR = n
+		}
+	}
 	s.say(id, "[%s] session %s finished: %s", st, k.ID, rec.Outcome)
 	if err := s.record(t, rec); err != nil {
 		return err
@@ -301,6 +313,46 @@ func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error 
 		return err
 	}
 	return s.act(id, "stop session "+k.ID, func() error { return s.deck.Stop(ctx, k.ID) })
+}
+
+// checkLearn finds the learn session's PR by its branch and checks it is
+// what learn may produce (learncheck.Check). It returns the PR number, why
+// the PR fails the check (nil if it passes), and an error only when gh or
+// git could not be read. It reads and never writes, so a tick may repeat it.
+//
+// The learn PR is opened by the session without the greenhouse label, so a
+// lesson waiting on the human never counts toward wip.open_prs and never
+// holds back implement launches.
+func (s *scheduler) checkLearn(ctx context.Context, bead string) (int, error, error) {
+	branch := launch.DefaultBranch(bead, stage.Learn)
+	pr, err := s.gh.PRByBranch(ctx, branch)
+	if err != nil {
+		return 0, nil, err
+	}
+	if pr.Number == 0 {
+		return 0, fmt.Errorf("no PR has head %s", branch), nil
+	}
+	git := func(args ...string) ([]byte, error) { return s.runner.Run(ctx, s.cfg.Repo, "git", args...) }
+	if out, err := git("fetch", "--quiet", "origin"); err != nil {
+		return 0, nil, fmt.Errorf("git fetch: %w: %s", err, out)
+	}
+	var files []learncheck.File
+	for _, path := range pr.Files {
+		f := learncheck.File{Path: path}
+		// A lesson is added if the base lacks it and the head has it.
+		if strings.HasPrefix(path, learncheck.LessonsDir) {
+			if _, err := git("cat-file", "-e", VerifyBase+":"+path); err != nil {
+				if out, err := git("show", "origin/"+branch+":"+path); err == nil {
+					f.Added, f.Content = true, string(out)
+				}
+			}
+		}
+		files = append(files, f)
+	}
+	if err := learncheck.Check(files, pr.IsDraft, pr.State == "OPEN"); err != nil {
+		return pr.Number, fmt.Errorf("PR #%d: %w", pr.Number, err), nil
+	}
+	return pr.Number, nil, nil
 }
 
 // priorOf is where run's reused session ended its previous attempt; the
@@ -696,6 +748,26 @@ func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.
 	}
 	req := launch.Request{Bead: b.ID, Title: b.Title, DoneWhen: b.Description, Spec: specOf(*b),
 		Reason: launchReason(t.recs, b.ID, st), Stage: st, Branch: launch.DefaultBranch(b.ID, st)}
+	// fail records a launch that could not happen as needing a human.
+	fail := func(why string) (bool, error) {
+		rec := ledger.Record{Bead: b.ID, Stage: string(st), Start: run.Start, End: s.now(), Before: run.Before,
+			After: quotaOf(t.in.Reading), Retries: run.Retries, Outcome: string(stage.NeedsHuman), Reason: why}
+		if err := s.record(t, rec); err != nil {
+			return true, err
+		}
+		return true, s.deleteRun(t, b.ID)
+	}
+	if st == stage.Learn {
+		// Learn studies the rejected PR: the review record's.
+		req.PR = ledger.LastPR(t.recs, b.ID)
+		if req.PR > 0 {
+			pr, err := s.gh.PR(ctx, req.PR)
+			if err != nil {
+				return fail(fmt.Sprintf("could not read the rejected PR #%d for the learn session: %v", req.PR, err))
+			}
+			req.HeadRef = pr.HeadRef
+		}
+	}
 
 	// A session titled for this stage still exists: its title is taken, and
 	// its context and worktree are worth keeping, so the retry continues it.
@@ -743,13 +815,7 @@ func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.
 		s.say(b.ID, "  launch problem: %v", err)
 		return true, nil
 	}
-	rec := ledger.Record{Bead: b.ID, Stage: string(st), Start: run.Start, End: s.now(), Before: run.Before,
-		After: quotaOf(t.in.Reading), Retries: run.Retries,
-		Outcome: string(stage.NeedsHuman), Reason: fmt.Sprintf("could not launch the %s session: %v", st, err)}
-	if err := s.record(t, rec); err != nil {
-		return true, err
-	}
-	return true, s.deleteRun(t, b.ID)
+	return fail(fmt.Sprintf("could not launch the %s session: %v", st, err))
 }
 
 // resume continues ex, the existing session of b's stage, as the open run:
