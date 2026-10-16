@@ -25,7 +25,8 @@ const parent = "boss"
 // running children of parent, so several ticks can be driven against it.
 type testDeck struct {
 	launch.FakeDeck
-	n int
+	n       int
+	replies int // finished turns, for reply timestamps
 }
 
 func (d *testDeck) Launch(ctx context.Context, a launch.LaunchArgs) (launch.Session, error) {
@@ -40,10 +41,27 @@ func (d *testDeck) Launch(ctx context.Context, a launch.LaunchArgs) (launch.Sess
 	return s, nil
 }
 
-// finish makes session id end its turn with content as its final message.
+// Send records the message and, like a real session, starts a turn on it.
+func (d *testDeck) Send(ctx context.Context, id, messageFile string) error {
+	if err := d.FakeDeck.Send(ctx, id, messageFile); err != nil {
+		return err
+	}
+	d.States[id] = []launch.State{{ID: id, Status: "running", ClaudeSessionID: "c-" + id}}
+	for i, k := range d.Kids[parent] {
+		if k.ID == id {
+			d.Kids[parent][i].Status = "running"
+		}
+	}
+	return nil
+}
+
+// finish makes session id end its turn with content as its final message,
+// stamped later than any message before it.
 func (d *testDeck) finish(id, content string) {
+	d.replies++
+	at := time.Date(2026, 10, 12, 9, 0, d.replies, 0, time.UTC).Format(time.RFC3339Nano)
 	d.States[id] = []launch.State{{ID: id, Status: "waiting", ClaudeSessionID: "c-" + id}}
-	d.Outputs[id] = []launch.Output{{ClaudeSessionID: "c-" + id, Content: content}}
+	d.Outputs[id] = []launch.Output{{ClaudeSessionID: "c-" + id, Content: content, Timestamp: at}}
 	for i, k := range d.Kids[parent] {
 		if k.ID == id {
 			d.Kids[parent][i].Status = "waiting"
@@ -138,6 +156,8 @@ func newWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	w.s.launcher.PromptDir = prompts
+	w.s.launcher.PollInterval = time.Millisecond
+	w.s.launcher.DeliveryPolls = 3
 	w.s.local = time.UTC
 	return w
 }
@@ -178,8 +198,15 @@ func outcomes(recs []ledger.Record) string {
 // snapshot is every externally visible effect, to prove a tick did nothing.
 func (w *world) snapshot() string {
 	run, _ := w.s.store.Run("p-1")
-	return fmt.Sprintf("writes=%v launched=%d stopped=%v gh=%v ledger=%d run=%+v",
-		w.plan.Writes, len(w.deck.Launched), w.deck.Stopped, w.gh.calls, len(w.records()), run)
+	reuse := "none"
+	if run != nil && run.Reuse != nil {
+		r := *run
+		reuse = fmt.Sprintf("%+v", *r.Reuse)
+		r.Reuse = nil // print the value, not the pointer
+		run = &r
+	}
+	return fmt.Sprintf("writes=%v launched=%d stopped=%v started=%v sends=%v gh=%v ledger=%d run=%+v reuse=%s",
+		w.plan.Writes, len(w.deck.Launched), w.deck.Stopped, w.deck.Started, w.deck.Sends, w.gh.calls, len(w.records()), run, reuse)
 }
 
 // idle ticks once more and fails if anything changed.
@@ -252,15 +279,30 @@ func TestTickVerifyFailRetryThenPark(t *testing.T) {
 	w := newWorld(t)
 	w.runner.Replies["sh -c go test ./..."] = verify.Reply{Out: "--- FAIL: TestX", Err: errors.New("exit status 1")}
 	w.toVerify()
-	w.tick() // verify fails, retry: implement again
-	w.want(w.stage("p-1") == "implement" && len(w.deck.Launched) == 3, "want an implement retry, got %q, %d launches", w.stage("p-1"), len(w.deck.Launched))
-	retry := w.deck.Launched[2]
-	w.want(!retry.NewBranch, "the retry continues the PR's branch: %+v", retry)
-	w.want(strings.Contains(w.deck.Prompts[2], "--- FAIL: TestX"), "the verify log must reach the retry's prompt")
+	w.tick() // verify fails, retry: the implement session s2 again
+	w.want(w.stage("p-1") == "implement" && len(w.deck.Launched) == 2, "want an implement retry in s2, got %q, %d launches", w.stage("p-1"), len(w.deck.Launched))
+	w.want(slices.Equal(w.deck.Started, []string{"s2"}) && slices.Equal(w.deck.Sends, []string{"s2"}),
+		"the collected (stopped) s2 must be started again and sent the retry: started %v, sends %v", w.deck.Started, w.deck.Sends)
+	retry := w.deck.Prompts[len(w.deck.Prompts)-1]
+	w.want(strings.Contains(retry, "--- FAIL: TestX") && strings.Contains(retry, "(retry)") && strings.Contains(retry, "**same** PR number"),
+		"the verify log must reach the retry prompt:\n%s", retry)
+	run, _ := w.s.store.Run("p-1")
+	w.want(run != nil && run.Session == "s2" && run.Retries == 1 && run.Reuse != nil && run.Reuse.Sent && !run.Reuse.PriorAt.IsZero(),
+		"open run must reuse s2 with retries 1 and the prior reply's time: %+v", run)
 	w.idle()
 
-	w.deck.finish("s3", result(`{"kind":"implement-done","pr":7}`))
-	w.tick() // verify fails again: park
+	// The session stops working, but its last reply is still the first
+	// attempt's implement-done: that is not this run's result.
+	w.deck.States["s2"] = []launch.State{{ID: "s2", Status: "waiting", ClaudeSessionID: "c-s2"}}
+	w.deck.Kids[parent][1].Status = "waiting"
+	w.idle()
+	w.want(w.stage("p-1") == "implement" && len(w.records()) == 3, "a stale completion must not be collected: %s", outcomes(w.records()))
+
+	w.deck.finish("s2", result(`{"kind":"implement-done","pr":7}`))
+	w.tick() // the fresh completion is collected; verify fails again: park
+	impl := w.records()[3]
+	w.want(impl.Stage == "implement" && impl.Session == "s2" && impl.Retries == 1 && impl.Outcome == "implement-done",
+		"the retry's record: %+v", impl)
 	w.want(w.stage("p-1") == "parked", "want parked after one retry, got %q", w.stage("p-1"))
 	recs := w.records()
 	var retries []int
@@ -272,6 +314,81 @@ func TestTickVerifyFailRetryThenPark(t *testing.T) {
 	w.want(slices.Equal(retries, []int{0, 1}), "verify retries %v, want [0 1]", retries)
 	w.want(w.gh.prs[7].IsDraft, "a failing PR must stay a draft")
 	w.idle()
+}
+
+// failVerify drives p-1 to a failed verify of PR 7, collected and stopped
+// implement session s2 included, without ticking the retry.
+func (w *world) failVerify() {
+	w.t.Helper()
+	w.runner.Replies["sh -c go test ./..."] = verify.Reply{Out: "--- FAIL: TestX", Err: errors.New("exit status 1")}
+	w.toVerify()
+}
+
+func TestTickRetryWithoutSessionLaunchesOnTheBranch(t *testing.T) {
+	w := newWorld(t)
+	w.failVerify()
+	// One tick collects s2, verifies, and starts the retry in s2. Replay
+	// the retry as if the tick had crashed before sending, and a human had
+	// then removed s2: no session holds the title any more.
+	w.tick()
+	run, _ := w.s.store.Run("p-1")
+	run.Reuse.Sent = false
+	w.s.store.PutRun(*run)
+	w.deck.Kids[parent] = slices.DeleteFunc(w.deck.Kids[parent], func(k launch.Child) bool { return k.ID == "s2" })
+	w.tick()
+	w.want(len(w.deck.Launched) == 3 && w.deck.Launched[2].Title == "gh-implement-p-1" && !w.deck.Launched[2].NewBranch,
+		"want a new implement session on the existing branch: %+v", w.deck.Launched)
+	w.want(strings.Contains(w.deck.Prompts[len(w.deck.Prompts)-1], "Previous attempt failed verification"),
+		"a new session gets the implement prompt with the verify log")
+	run, _ = w.s.store.Run("p-1")
+	w.want(run != nil && run.Session == "s3" && run.Reuse == nil && run.Retries == 1, "open run %+v", run)
+	w.idle()
+}
+
+func TestTickRetryCrashBeforeSendRecorded(t *testing.T) {
+	w := newWorld(t)
+	w.failVerify()
+	w.tick() // the retry is sent to s2, which is now working on it
+	// Crash: the send happened but the open run never recorded it.
+	run, _ := w.s.store.Run("p-1")
+	prior := *run.Reuse
+	run.Reuse.Sent = false
+	w.s.store.PutRun(*run)
+	w.tick()
+	run, _ = w.s.store.Run("p-1")
+	w.want(slices.Equal(w.deck.Sends, []string{"s2"}) && len(w.deck.Started) == 1,
+		"a working session is adopted, not sent the retry again: sends %v, started %v", w.deck.Sends, w.deck.Started)
+	w.want(run.Reuse.Sent && run.Reuse.PriorAt.Equal(prior.PriorAt) && run.Reuse.PriorDigest == prior.PriorDigest,
+		"the adopted run keeps the baseline taken before the send: %+v vs %+v", *run.Reuse, prior)
+	w.idle()
+}
+
+func TestTickRetryStartFailureParks(t *testing.T) {
+	w := newWorld(t)
+	w.failVerify()
+	w.deck.StartErr = errors.New("tmux: no server")
+	w.tick()
+	w.want(w.stage("p-1") == "parked", "an unresumable session parks the bead, got %q", w.stage("p-1"))
+	last := w.records()[len(w.records())-1]
+	w.want(last.Stage == "implement" && last.Outcome == "needs-human" && last.Session == "s2" && last.Retries == 1 &&
+		strings.Contains(last.Reason, "could not resume the implement session s2") && strings.Contains(last.Reason, "tmux: no server"),
+		"record %+v", last)
+	w.want(len(w.deck.Sends) == 0 && len(w.deck.Launched) == 2, "nothing sent or launched")
+	w.idle()
+}
+
+func TestTickRetryDryRun(t *testing.T) {
+	w := newWorld(t)
+	w.failVerify()
+	w.tick() // the retry resumes s2
+	run, _ := w.s.store.Run("p-1")
+	run.Reuse.Sent = false // as if the tick crashed before the send
+	w.s.store.PutRun(*run)
+	w.deck.States["s2"] = []launch.State{{ID: "s2", Status: "waiting", ClaudeSessionID: "c-s2"}}
+	w.deck.Kids[parent][1].Status = "waiting"
+	w.s.dry = true
+	w.idle()
+	w.want(strings.Contains(w.out.String(), "would resume gh-implement-p-1"), "dry run must report the resume")
 }
 
 func TestTickNeedsHumanParks(t *testing.T) {
@@ -287,7 +404,10 @@ func TestTickNeedsHumanParks(t *testing.T) {
 	// The human unparks by removing the label: the bead restarts at spec.
 	w.plan.SetStage(context.Background(), "p-1", "")
 	w.tick()
-	w.want(w.stage("p-1") == "spec" && len(w.deck.Launched) == 2, "unparked bead must restart at spec, got %q", w.stage("p-1"))
+	// Its spec session still exists, so spec runs again in it (ADR-0009).
+	w.want(w.stage("p-1") == "spec" && len(w.deck.Launched) == 1 && slices.Equal(w.deck.Sends, []string{"s1"}),
+		"unparked bead must restart at spec in its spec session, got %q, %d launches, sends %v", w.stage("p-1"), len(w.deck.Launched), w.deck.Sends)
+	w.want(strings.Contains(w.deck.Prompts[1], "its last run was spec, needs-human: Which API?"), "the retry says why:\n%s", w.deck.Prompts[1])
 	w.idle()
 }
 
@@ -364,7 +484,9 @@ func TestTickUsageLimitParksLaunches(t *testing.T) {
 	w.idle()
 	w.clock = park.Until.Add(time.Minute)
 	w.tick()
-	w.want(len(w.deck.Launched) == 2 && w.deck.Launched[1].Title == "gh-spec-p-1", "spec relaunches once the park lifts")
+	w.want(len(w.deck.Launched) == 1 && slices.Equal(w.deck.Started, []string{"s1"}) && slices.Equal(w.deck.Sends, []string{"s1"}),
+		"spec resumes in its session once the park lifts: %d launches, started %v, sends %v", len(w.deck.Launched), w.deck.Started, w.deck.Sends)
+	w.want(strings.Contains(w.deck.Prompts[1], "usage limit stopped your previous turn"), "the retry says why:\n%s", w.deck.Prompts[1])
 }
 
 func TestTickDryRun(t *testing.T) {

@@ -88,6 +88,14 @@ paths first; commit with trailers; open the PR as a **draft**, stamped with the
 session; end with the `===AGENTDECK_DONE===` sentinel. Prompts are versioned
 files in `prompts/`, so a change to how the factory works is a reviewed diff.
 
+A stage that runs again for the same bead (a verify-fail retry, a relaunch
+after a usage-limit park, a spec after an unpark) **resumes its existing
+session** instead of launching one, since its title is taken: greenhouse
+starts it again if it is stopped and sends it `prompts/retry.md` with why it
+runs again. Only a reply written after that message counts as the run's
+result; the previous attempt's completion is ignored. If a human removed the
+session, a new one is launched on the existing branch. (ADR-0009)
+
 ## Exceptions: the conductor (ADR-0006)
 
 The scheduler never guesses. Anything it can't route becomes `stage:parked`

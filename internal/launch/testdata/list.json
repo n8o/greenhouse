@@ -1,0 +1,34 @@
+[
+  {
+    "id": "aa11-1",
+    "title": "gh-implement-x-1",
+    "path": "/home/me/work",
+    "group": "elsewhere",
+    "tool": "claude",
+    "status": "idle",
+    "claude_session_id": "c-other"
+  },
+  {
+    "id": "f7035749-1",
+    "parent_session_id": "d2d4814b-1",
+    "title": "gh-implement-x-1",
+    "path": "/work/repo/.worktrees/feature-x-1-implement",
+    "group": "greenhouse",
+    "tool": "claude",
+    "command": "claude",
+    "model": "opus",
+    "status": "stopped",
+    "status_source": "cached",
+    "created_at": "2026-10-15T06:47:04-04:00",
+    "archived": false,
+    "claude_session_id": "c-1",
+    "last_activity_at": "2026-10-15T10:57:16Z",
+    "viewers": []
+  },
+  {
+    "id": "bb22-1",
+    "title": "gh-implement-x-10",
+    "group": "greenhouse",
+    "status": "running"
+  }
+]

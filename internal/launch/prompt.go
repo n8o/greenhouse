@@ -66,12 +66,30 @@ var eventDocs = map[stage.EventKind]EventDoc{
 // Render renders prompts/<stage>.md from dir, with prompts/contract.md, for
 // req. A template that uses a missing field is an error.
 func Render(dir string, req Request, maxTurns int) (string, error) {
+	if req.Stage == stage.Learn && req.Reason == "" {
+		return "", fmt.Errorf("render: learn needs the rejection reason")
+	}
+	return render(dir, string(req.Stage)+".md", req, maxTurns)
+}
+
+// RetryPrompt is the template, next to the stage prompts, that a resumed
+// stage session receives instead of its stage prompt.
+const RetryPrompt = "retry.md"
+
+// RenderRetry renders prompts/retry.md for req, the follow-up message a
+// stage session that already ran gets when its stage runs again. req.Reason
+// says why it runs again and is required.
+func RenderRetry(dir string, req Request, maxTurns int) (string, error) {
+	if req.Reason == "" {
+		return "", fmt.Errorf("render retry: the reason for the retry is required")
+	}
+	return render(dir, RetryPrompt, req, maxTurns)
+}
+
+func render(dir, name string, req Request, maxTurns int) (string, error) {
 	kinds, ok := Reported[req.Stage]
 	if !ok {
 		return "", fmt.Errorf("render: stage %q runs no session", req.Stage)
-	}
-	if req.Stage == stage.Learn && req.Reason == "" {
-		return "", fmt.Errorf("render: learn needs the rejection reason")
 	}
 	if req.Branch == "" {
 		req.Branch = DefaultBranch(req.Bead, req.Stage)
@@ -87,7 +105,6 @@ func Render(dir string, req Request, maxTurns int) (string, error) {
 		data.Events = append(data.Events, eventDocs[k])
 	}
 
-	name := string(req.Stage) + ".md"
 	tmpl, err := template.New(name).Option("missingkey=error").
 		ParseFiles(filepath.Join(dir, name), filepath.Join(dir, "contract.md"))
 	if err != nil {
