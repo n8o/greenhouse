@@ -83,6 +83,9 @@ type Event struct {
 	// since its last spec run. Read by VerifyFail; the scheduler derives it
 	// from the Record actions it has carried out.
 	Retries int
+	// Resume is the stage an Unparked bead resumes in (see Resume); "" restarts
+	// it at spec.
+	Resume Stage
 }
 
 // ActionKind is an effect the scheduler performs after a transition.
@@ -178,7 +181,24 @@ func Next(s Stage, e Event) (Stage, []Action, error) {
 		return Parked, []Action{{Kind: ActPark, Reason: "PR rejected and lesson proposed: re-plan and unpark, or close the bead"}}, nil
 
 	case s == Parked && e.Kind == Unparked:
-		return Spec, []Action{{Kind: ActLaunch, Stage: Spec}}, nil
+		switch e.Resume {
+		case "", Spec:
+			return Spec, []Action{{Kind: ActLaunch, Stage: Spec}}, nil
+		case Implement, Learn:
+			return e.Resume, []Action{{Kind: ActLaunch, Stage: e.Resume}}, nil
+		case Verify:
+			if e.PR <= 0 {
+				return fail("PR number is required to resume verify, got %d", e.PR)
+			}
+			return Verify, []Action{{Kind: ActVerify, PR: e.PR}}, nil
+		case Review:
+			// Back to waiting on the human's verdict; nothing to do but read it.
+			if e.PR <= 0 {
+				return fail("PR number is required to resume review, got %d", e.PR)
+			}
+			return Review, []Action{}, nil
+		}
+		return fail("cannot resume at %q", e.Resume)
 	}
 
 	for _, k := range EventKinds() {
@@ -187,4 +207,28 @@ func Next(s Stage, e Event) (Stage, []Action, error) {
 		}
 	}
 	return s, nil, fmt.Errorf("%w: unknown event %q", ErrInvalid, e.Kind)
+}
+
+// Resume returns the stage a bead resumes in when a human releases it from
+// parked (ADR-0010), given its last stage run: s and the event that run
+// produced. A run that parked the bead resumes its own stage: a failed or
+// questioning spec, implement or learn session runs again, and a verify that
+// failed with its retries used is verified again. The one exception is a
+// rejected PR's finished lesson, which asked for a re-plan, so it resumes at
+// spec. A run that did not park (a lost label) resumes where its transition
+// leads. A merged bead does not resume: it is done or its close is missing
+// from the default branch, and either way a human decides.
+func Resume(s Stage, e Event) (Stage, error) {
+	next, _, err := Next(s, e)
+	switch {
+	case err != nil:
+		return "", err
+	case s == Learn && e.Kind == LearnDone:
+		return Spec, nil
+	case next == Parked:
+		return s, nil
+	case next == Done:
+		return "", fmt.Errorf("%w: %s on %s: the bead is merged; nothing to resume", ErrInvalid, s, e.Kind)
+	}
+	return next, nil
 }

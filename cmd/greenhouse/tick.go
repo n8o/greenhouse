@@ -67,6 +67,7 @@ type scheduler struct {
 // also overlays the open runs the run would have written.
 type tick struct {
 	beads    []plan.Bead
+	landed   plan.Landed // beads closed on VerifyBase: what "done" means (ADR-0010)
 	recs     []ledger.Record
 	kids     []launch.Child
 	in       gate.Inputs
@@ -81,6 +82,10 @@ func (s *scheduler) Tick(ctx context.Context) error {
 	beads, err := s.plan.List(ctx)
 	if err != nil {
 		return err
+	}
+	landed, err := s.readLanded(ctx)
+	if err != nil {
+		return fmt.Errorf("read the plan on %s: %w", VerifyBase, err)
 	}
 	recs, err := s.store.Records()
 	if err != nil {
@@ -97,7 +102,7 @@ func (s *scheduler) Tick(ctx context.Context) error {
 	in := gate.Gather(ctx, s.probe, now)
 	in.Quota, in.WIP = s.cfg.Quota, s.cfg.WIP
 	in.Park = gate.Park{Until: park.Until, Reason: park.Reason}
-	t := &tick{beads: beads, recs: recs, kids: kids, in: in, runs: map[string]*ledger.Run{}}
+	t := &tick{beads: beads, landed: landed, recs: recs, kids: kids, in: in, runs: map[string]*ledger.Run{}}
 
 	fmt.Fprintf(s.out, "tick %s%s: %d beads, %d stage sessions, %d ledger records\n",
 		now.Format(time.RFC3339), map[bool]string{true: " (dry run: nothing is carried out)"}[s.dry],
@@ -121,6 +126,39 @@ func (s *scheduler) Tick(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// readLanded reads which beads are closed in the plan export at VerifyBase
+// (ADR-0010). It fetches origin first; a failed fetch is reported and the
+// ref is read as last fetched, so an offline tick sees fewer beads done,
+// never more. A plan it cannot read fails the tick: read as "nothing is
+// done", it would park every closed bead.
+func (s *scheduler) readLanded(ctx context.Context) (plan.Landed, error) {
+	git := func(args ...string) ([]byte, error) { return s.runner.Run(ctx, s.cfg.Repo, "git", args...) }
+	if out, err := git("fetch", "--quiet", "origin"); err != nil {
+		fmt.Fprintf(s.out, "git fetch origin failed (%v: %s); reading %s as last fetched\n",
+			err, strings.TrimSpace(string(out)), VerifyBase)
+	}
+	out, err := git("ls-tree", "--name-only", VerifyBase, "--", plan.ExportDir)
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var files [][]byte
+	for line := range strings.Lines(string(out)) {
+		path := strings.TrimSpace(line)
+		if !strings.HasSuffix(path, ".jsonl") {
+			continue
+		}
+		data, err := git("show", VerifyBase+":"+path)
+		if err != nil {
+			return nil, fmt.Errorf("git show %s:%s: %w: %s", VerifyBase, path, err, strings.TrimSpace(string(data)))
+		}
+		files = append(files, data)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no plan under %s: the plan must be in git (ADR-0005)", plan.ExportDir)
+	}
+	return plan.ParseLanded(files...)
 }
 
 // say prints one decision line for bead.
@@ -302,7 +340,7 @@ func quotaOf(r *gate.Reading) ledger.Quota {
 // advance takes the steps bead's state allows. A dry run stops after the
 // first, since the state it would have written is not there to read.
 func (s *scheduler) advance(ctx context.Context, t *tick, b *plan.Bead) error {
-	if b.Done() {
+	if st := b.Stage(); t.landed.Done(b.ID) && (st == "" || st == string(stage.Done)) {
 		return nil
 	}
 	for range 8 {
@@ -338,7 +376,25 @@ func (s *scheduler) step(ctx context.Context, t *tick, b *plan.Bead) (bool, erro
 		return false, nil // in flight; collect watches it
 	}
 
-	if last := ledger.Last(t.recs, b.ID); st != "" && last != nil && last.Stage == string(st) && last.Outcome != ledger.UsageLimit {
+	last, lastRun := ledger.Last(t.recs, b.ID), ledger.LastRun(t.recs, b.ID)
+	if st == stage.Parked {
+		s.say(b.ID, "[parked] waiting on a human (reason in the ledger); %s", unparkHint(lastRun))
+		return false, nil
+	}
+	stillParked := slices.Contains(b.Labels, plan.StagePrefix+string(stage.Parked))
+	switch {
+	case last != nil && last.Outcome == ledger.Unparked && st == "":
+		// The unpark is recorded; its label has not moved yet.
+		return true, s.setStage(ctx, b, stage.Stage(last.Resume))
+	case released(st, stillParked, last, lastRun):
+		return s.unpark(ctx, t, b, st, *lastRun)
+	case stillParked:
+		// Released to st and recorded; drop the parked label.
+		return true, s.setStage(ctx, b, st)
+	case st == "" && lastRun == nil && b.Status == "closed":
+		return s.unlanded(ctx, t, b)
+	}
+	if st != "" && last != nil && last.Stage == string(st) && last.Outcome != ledger.UsageLimit {
 		return s.apply(ctx, t, b, st, *last)
 	}
 	switch st {
@@ -351,10 +407,126 @@ func (s *scheduler) step(ctx context.Context, t *tick, b *plan.Bead) (bool, erro
 	case stage.Review:
 		return s.review(ctx, t, b)
 	}
-	if st == stage.Parked {
-		s.say(b.ID, "[parked] waiting on a human (reason in the ledger); remove stage:parked to restart at spec")
+	if st == stage.Done && !t.landed.Done(b.ID) {
+		s.say(b.ID, "[done] merged, but its close is not on %s yet; its dependents wait", VerifyBase)
 	}
 	return false, nil
+}
+
+// eventOf is the stage event rec recorded.
+func eventOf(rec ledger.Record) stage.Event {
+	return stage.Event{Kind: stage.EventKind(rec.Outcome), Reason: rec.Reason, PR: rec.PR, Retries: rec.Retries}
+}
+
+// parks reports whether rec is a stage run whose outcome parked its bead.
+func parks(rec ledger.Record) bool {
+	if !rec.IsRun() || rec.Outcome == ledger.UsageLimit {
+		return false
+	}
+	next, _, err := stage.Next(stage.Stage(rec.Stage), eventOf(rec))
+	return err == nil && next == stage.Parked
+}
+
+// resumeOf is the stage a bead whose last stage run is rec resumes in when
+// it is released without a stage of the human's choosing (ADR-0010).
+func resumeOf(rec ledger.Record) (stage.Stage, error) {
+	if rec.Outcome == ledger.UsageLimit {
+		return stage.Stage(rec.Stage), nil
+	}
+	return stage.Resume(stage.Stage(rec.Stage), eventOf(rec))
+}
+
+// released reports whether a human has released a bead with stage label st
+// whose last record is last and last stage run lastRun (ADR-0010). It has
+// runs, and either no stage label (stage:parked was removed, or the label
+// was lost), or a stage label added next to stage:parked (stillParked), or
+// a run parked it and its label is now neither stage:parked nor that run's
+// stage. A label equal to the parking run's stage without stage:parked
+// beside it is an unfinished transition (ADR-0007), not a release. An
+// unpark already recorded is not a new release.
+func released(st stage.Stage, stillParked bool, last, lastRun *ledger.Record) bool {
+	if lastRun == nil || !last.IsRun() {
+		return false
+	}
+	return st == "" || stillParked || st != stage.Stage(lastRun.Stage) && parks(*lastRun)
+}
+
+// unpark resumes a released bead: in st if the human chose it, else in the
+// stage its last run implies (the stage that parked it). The unpark is a
+// ledger record, which resets the verify retry budget, and the label moves
+// last (ADR-0007).
+func (s *scheduler) unpark(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, lastRun ledger.Record) (bool, error) {
+	if b.Status == "closed" {
+		s.say(b.ID, "closed in the local bd database, but its close is not on %s: not done; it resumes as an in-flight bead", VerifyBase)
+	}
+	resume := st
+	why := "a human set stage:" + string(st)
+	if st == "" {
+		r, err := resumeOf(lastRun)
+		if err != nil {
+			return s.parkBead(ctx, t, b, fmt.Sprintf("released with no stage label, but its last run (%s, %s) says nothing to resume: %v. "+
+				"Add the stage label it should resume in (stage:spec restarts it).", lastRun.Stage, lastRun.Outcome, err))
+		}
+		resume = r
+		why = fmt.Sprintf("no stage label; its last run was %s, %s", lastRun.Stage, lastRun.Outcome)
+	}
+	pr := ledger.LastPR(t.recs, b.ID)
+	next, _, err := stage.Next(stage.Parked, stage.Event{Kind: stage.Unparked, Resume: resume, PR: pr})
+	if err != nil {
+		s.say(b.ID, "[%s] released, but it cannot resume there: %v; left for a human", resume, err)
+		return false, nil
+	}
+	s.say(b.ID, "[parked] released (%s) → resume %s, verify retries reset", why, next)
+	now := s.now()
+	q := quotaOf(t.in.Reading)
+	if err := s.record(t, ledger.Record{Bead: b.ID, Stage: ledger.ParkedStage, Start: now, End: now, Before: q, After: q,
+		Outcome: ledger.Unparked, Resume: string(next), Reason: why, PR: pr}); err != nil {
+		return true, err
+	}
+	return true, s.setStage(ctx, b, next)
+}
+
+// unlanded handles a bead closed in the local bd database, with no stage
+// label and no run in the ledger, whose close is not on VerifyBase. It is
+// neither done nor in flight, so an approved bead is parked with the reason
+// rather than guessed at; any other bead is only reported.
+func (s *scheduler) unlanded(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
+	msg := fmt.Sprintf("closed in the local bd database, but its close is not on %s and greenhouse has no run of it", VerifyBase)
+	if !b.Approved() {
+		s.say(b.ID, "%s: not done; its dependents wait for its PR to merge", msg)
+		return false, nil
+	}
+	return s.parkBead(ctx, t, b, msg+". Merge the PR that closes it, or reopen it (bd reopen "+b.ID+") and remove stage:parked to run it.")
+}
+
+// parkBead parks b for a human without a stage run: the reason is a ledger
+// record, and the label moves last.
+func (s *scheduler) parkBead(ctx context.Context, t *tick, b *plan.Bead, reason string) (bool, error) {
+	s.say(b.ID, "park: %s", reason)
+	now := s.now()
+	q := quotaOf(t.in.Reading)
+	if err := s.record(t, ledger.Record{Bead: b.ID, Stage: ledger.ParkedStage, Start: now, End: now, Before: q, After: q,
+		Outcome: string(stage.NeedsHuman), Reason: reason}); err != nil {
+		return true, err
+	}
+	return true, s.setStage(ctx, b, stage.Parked)
+}
+
+// unparkHint tells the human how to release a parked bead whose last stage
+// run is lastRun.
+func unparkHint(lastRun *ledger.Record) string {
+	const restart = "add stage:spec to restart at spec"
+	if lastRun == nil {
+		return "remove stage:parked to start it (reopen it first if it is closed)"
+	}
+	r, err := resumeOf(*lastRun)
+	if err != nil {
+		return "add the stage label it should resume in; " + restart
+	}
+	if r == stage.Spec {
+		return "remove stage:parked to resume spec"
+	}
+	return fmt.Sprintf("remove stage:parked to resume %s, or %s", r, restart)
 }
 
 func (s *scheduler) setStage(ctx context.Context, b *plan.Bead, st stage.Stage) error {
@@ -374,7 +546,7 @@ func (s *scheduler) setStage(ctx context.Context, b *plan.Bead, st stage.Stage) 
 // apply carries out the transition last implies. Every effect is checked
 // first or safe to repeat; the label moves last.
 func (s *scheduler) apply(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, last ledger.Record) (bool, error) {
-	ev := stage.Event{Kind: stage.EventKind(last.Outcome), Reason: last.Reason, PR: last.PR, Retries: last.Retries}
+	ev := eventOf(last)
 	next, acts, err := stage.Next(st, ev)
 	if err != nil {
 		s.say(b.ID, "[%s] cannot route %s: %v; left for a human", st, ev.Kind, err)
@@ -449,8 +621,8 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 	if !b.Approved() || t.started {
 		return false, nil
 	}
-	if !plan.Ready(*b, t.beads) {
-		s.say(b.ID, "approved, not ready: %s", blockers(*b, t.beads))
+	if !plan.Ready(*b, t.landed) {
+		s.say(b.ID, "approved, not ready: %s", blockers(*b, t))
 		return false, nil
 	}
 	next, _ := stage.Start()
@@ -466,26 +638,30 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 }
 
 // blockers describes why b is not ready.
-func blockers(b plan.Bead, beads []plan.Bead) string {
+func blockers(b plan.Bead, t *tick) string {
 	if b.Status != "open" {
 		return "status " + b.Status
 	}
 	var open []string
-	for _, d := range b.Dependencies {
-		if x := findBead(beads, d.DependsOn); x == nil || !x.Done() {
-			open = append(open, d.DependsOn)
+	for _, id := range plan.Blockers(b) {
+		if t.landed.Done(id) {
+			continue
 		}
+		if x := findBead(t.beads, id); x != nil && x.Status == "closed" {
+			id += " (closed locally, not on " + VerifyBase + ")"
+		}
+		open = append(open, id)
 	}
 	return "waits on " + strings.Join(open, ", ")
 }
 
 func (s *scheduler) whyNoStart(t *tick) string {
 	for _, b := range t.beads {
-		if b.Stage() == "" && b.Approved() && plan.Ready(b, t.beads) {
+		if b.Stage() == "" && b.Approved() && plan.Ready(b, t.landed) {
 			return "gates hold " + b.ID
 		}
 	}
-	return "no open " + plan.ApprovedLabel + " bead without a stage has all its blockers closed"
+	return "no open " + plan.ApprovedLabel + " bead without a stage has all its blockers closed on " + VerifyBase
 }
 
 func (s *scheduler) newRun(t *tick, bead string, st stage.Stage) ledger.Run {
@@ -647,13 +823,22 @@ func (s *scheduler) resume(ctx context.Context, t *tick, b *plan.Bead, run *ledg
 // retryReason tells a resumed stage session why it runs again. reason is
 // the launch reason (the verify log of an implement retry), if any.
 func retryReason(recs []ledger.Record, bead string, st stage.Stage, reason string) string {
+	why := retryWhy(recs, bead, st, reason)
+	if last := ledger.Last(recs, bead); last != nil && last.Outcome == ledger.Unparked {
+		return fmt.Sprintf("A human looked at this bead while it was parked and released it to the %s stage, "+
+			"so the question or failure that parked it may be answered in the bead now.\n\n%s", st, why)
+	}
+	return why
+}
+
+func retryWhy(recs []ledger.Record, bead string, st stage.Stage, reason string) string {
 	if reason != "" && st == stage.Implement {
 		return "Verification of your draft PR failed. Its log:\n\n" + reason
 	}
 	if reason != "" {
 		return reason
 	}
-	last := ledger.Last(recs, bead)
+	last := ledger.LastRun(recs, bead)
 	switch {
 	case last == nil:
 		return fmt.Sprintf("greenhouse is running the %s stage again.", st)
@@ -692,14 +877,24 @@ func specOf(b plan.Bead) string {
 }
 
 // launchReason is the scheduler's context for an st session: the verify log
-// for an implement retry, the rejection reason for learn.
+// for an implement retry, the rejection reason for learn. An implement retry
+// that never finished (its session could not start, or it asked a question
+// and was unparked) still gets the verify log that sent it back.
 func launchReason(recs []ledger.Record, bead string, st stage.Stage) string {
-	last := ledger.Last(recs, bead)
-	switch {
-	case last == nil:
-	case st == stage.Implement && last.Outcome == string(stage.VerifyFail),
-		st == stage.Learn && last.Outcome == string(stage.Rejected):
-		return last.Reason
+	for i := len(recs) - 1; i >= 0; i-- {
+		r := recs[i]
+		switch {
+		case r.Bead != bead || !r.IsRun():
+		case st == stage.Implement && r.Outcome == string(stage.VerifyFail),
+			st == stage.Learn && r.Outcome == string(stage.Rejected):
+			return r.Reason
+		case st == stage.Implement && r.Stage == string(stage.Implement) &&
+			r.Outcome != string(stage.ImplementDone) && r.Outcome != ledger.UsageLimit:
+			// An implement retry that parked unfinished: look past it. (A
+			// usage-limit stop is told to continue where it left off.)
+		default:
+			return ""
+		}
 	}
 	return ""
 }

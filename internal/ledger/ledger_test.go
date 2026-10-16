@@ -46,6 +46,30 @@ func TestAppendRecords(t *testing.T) {
 	}
 }
 
+func TestUnparkResetsRetries(t *testing.T) {
+	recs := []Record{
+		{Bead: "p-1", Stage: "implement", Outcome: "implement-done", PR: 7},
+		{Bead: "p-1", Stage: "verify", Outcome: "verify-fail", PR: 7},
+		{Bead: "p-1", Stage: "verify", Outcome: "verify-fail", PR: 7, Retries: 1},
+	}
+	if got := Retries(recs, "p-1"); got != 2 {
+		t.Fatalf("Retries = %d, want 2", got)
+	}
+	recs = append(recs, Record{Bead: "p-1", Stage: ParkedStage, Outcome: Unparked, Resume: "verify"})
+	if got := Retries(recs, "p-1"); got != 0 {
+		t.Errorf("Retries after an unpark = %d, want 0", got)
+	}
+	if r := LastRun(recs, "p-1"); r == nil || r.Stage != "verify" || r.Retries != 1 {
+		t.Errorf("LastRun skips the unpark: %+v", r)
+	}
+	if r := Last(recs, "p-1"); r == nil || r.IsRun() {
+		t.Errorf("Last is the unpark: %+v", r)
+	}
+	if LastPR(recs, "p-1") != 7 || LastRun(recs, "p-2") != nil {
+		t.Error("LastPR and LastRun")
+	}
+}
+
 func TestTornLine(t *testing.T) {
 	s := &Store{Dir: t.TempDir()}
 	if err := s.Append(Record{Bead: "p-1", Stage: "spec"}); err != nil {

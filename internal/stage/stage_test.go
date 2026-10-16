@@ -73,6 +73,13 @@ func TestNextValid(t *testing.T) {
 			[]Action{{Kind: ActPark, Reason: "q"}}},
 		{"unparked respecs", Parked, Event{Kind: Unparked}, Spec,
 			[]Action{{Kind: ActLaunch, Stage: Spec}}},
+		{"unparked resumes implement", Parked, Event{Kind: Unparked, Resume: Implement}, Implement,
+			[]Action{{Kind: ActLaunch, Stage: Implement}}},
+		{"unparked resumes verify", Parked, Event{Kind: Unparked, Resume: Verify, PR: 7}, Verify,
+			[]Action{{Kind: ActVerify, PR: 7}}},
+		{"unparked resumes review", Parked, Event{Kind: Unparked, Resume: Review, PR: 7}, Review, []Action{}},
+		{"unparked resumes learn", Parked, Event{Kind: Unparked, Resume: Learn}, Learn,
+			[]Action{{Kind: ActLaunch, Stage: Learn}}},
 	}
 	covered := map[pair]bool{}
 	for _, tt := range tests {
@@ -147,6 +154,10 @@ func TestNextMalformed(t *testing.T) {
 		{"verify fail without log", Verify, Event{Kind: VerifyFail}, "verify log"},
 		{"negative retries", Verify, Event{Kind: VerifyFail, Reason: "log", Retries: -1}, "retries must be >= 0"},
 		{"rejected without reason", Review, Event{Kind: Rejected}, "why the PR was rejected"},
+		{"resume verify without PR", Parked, Event{Kind: Unparked, Resume: Verify}, "PR number is required to resume verify"},
+		{"resume review without PR", Parked, Event{Kind: Unparked, Resume: Review}, "PR number is required to resume review"},
+		{"resume at done", Parked, Event{Kind: Unparked, Resume: Done}, `cannot resume at "done"`},
+		{"resume at parked", Parked, Event{Kind: Unparked, Resume: Parked}, `cannot resume at "parked"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,6 +193,45 @@ func TestRetryOnceThenPark(t *testing.T) {
 			t.Fatalf("step %d: %s on %s → %s, want %s", i, s, e.Kind, next, want[i])
 		}
 		s = next
+	}
+}
+
+func TestResume(t *testing.T) {
+	tests := []struct {
+		name string
+		s    Stage
+		e    Event
+		want Stage
+	}{
+		{"vague spec respecs", Spec, Event{Kind: SpecVague, Reason: "r"}, Spec},
+		{"spec question respecs", Spec, Event{Kind: NeedsHuman, Reason: "r"}, Spec},
+		{"implement question resumes implement", Implement, Event{Kind: NeedsHuman, Reason: "r"}, Implement},
+		{"failed implement resumes implement", Implement, Event{Kind: ImplementFailed, Reason: "r"}, Implement},
+		{"verify out of retries re-verifies", Verify, Event{Kind: VerifyFail, Reason: "log", Retries: 1}, Verify},
+		{"verify with a retry left goes to implement", Verify, Event{Kind: VerifyFail, Reason: "log"}, Implement},
+		{"learn question resumes learn", Learn, Event{Kind: NeedsHuman, Reason: "r"}, Learn},
+		{"lesson done respecs", Learn, Event{Kind: LearnDone}, Spec},
+		{"lost label after spec", Spec, Event{Kind: SpecDone}, Implement},
+		{"lost label after implement", Implement, Event{Kind: ImplementDone, PR: 7}, Verify},
+		{"lost label after verify pass", Verify, Event{Kind: VerifyPass, PR: 7}, Review},
+		{"lost label after reject", Review, Event{Kind: Rejected, Reason: "r"}, Learn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Resume(tt.s, tt.e)
+			if err != nil || got != tt.want {
+				t.Errorf("Resume(%s, %s) = %q, %v; want %s", tt.s, tt.e.Kind, got, err, tt.want)
+			}
+		})
+	}
+	for _, e := range []Event{{Kind: Merged}, {Kind: SpecDone}, {Kind: "tea-break"}} {
+		s := Review
+		if e.Kind == SpecDone {
+			s = Verify // no such transition
+		}
+		if _, err := Resume(s, e); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Resume(%s, %s): err = %v, want ErrInvalid", s, e.Kind, err)
+		}
 	}
 }
 

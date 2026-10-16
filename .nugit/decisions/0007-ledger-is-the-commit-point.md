@@ -41,8 +41,11 @@ touches four systems (bd labels, agent-deck sessions, gh PRs, and
 4. **"Done" means closed and not in flight.** An implement session closes
    its bead inside its PR (ADR-0005), so a closed bead with a stage label
    other than `stage:done` is still moving and does not unblock dependents.
+   (Amended by ADR-0010: done means closed in the plan export on
+   `origin/main`; the local bd database never makes a bead done.)
 5. **Unparking is removing `stage:parked`.** The bead restarts at spec as a
-   fresh start, the same as `stage.Unparked`.
+   fresh start, the same as `stage.Unparked`. (Amended by ADR-0010: an
+   unpark resumes the stage that parked, and `stage:spec` restarts it.)
 
 ## Consequences
 - Retry counts, PR numbers and park reasons are read back from the ledger;

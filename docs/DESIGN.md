@@ -43,7 +43,7 @@ marked ready for review only after it is validated. A human merges. The first pr
           │
  ┌──────── greenhouse tick (no LLM) ────────────────────────────────┐
  │ gates: quota headroom · WIP < cap · open agent PRs < cap       │
- │ pick next READY approved bead (bd ready: deps satisfied)       │
+ │ pick next READY approved bead (blockers closed on origin/main) │
  │ launch stage session ─────────────▶ agent-deck launch         │
  │ ◀─ completion (sentinel → inbox) ──┘  (worktree, claude, nugit)│
  │ advance label · retry once · or park (stage:parked + reason)   │
@@ -59,8 +59,42 @@ marked ready for review only after it is validated. A human merges. The first pr
 | `learn` | 1 short session | rejection reason + diff | `.nugit/lessons/*.md` (proposed) | — |
 
 The bead label records the stage (`stage:spec|implement|verify|review|parked`).
-The scheduler's only memory is the labels, `agent-deck session children --json`
-and `gh pr list`.
+The scheduler's only memory is the labels, `agent-deck session children --json`,
+`gh pr list`, the ledger, and the plan on `origin/main`.
+
+**Done means closed on main** (ADR-0010). A bead is done, and unblocks its
+dependents, only when its line is `closed` in `.beads/plans/*.jsonl` at
+`origin/main`, which each tick fetches and reads. A step's PR closes its own
+bead (ADR-0005), and in the shared local bd database that close shows up
+long before the merge, so a local `closed` never makes a bead done. A bead
+closed locally whose close is not on main is reported on every tick. With
+no stage label, it resumes as an in-flight bead if the ledger has runs of
+it; otherwise an approved bead is parked with the reason.
+
+## Parking and unparking
+
+A parked bead (`stage:parked`) waits for a human; the reason is its last
+ledger record, and the tick's line for it names the stage it would resume:
+
+```
+gr-boot-7  [parked] waiting on a human (reason in the ledger); remove stage:parked to resume verify, or add stage:spec to restart at spec
+```
+
+- **Resume:** remove `stage:parked` (`bd label remove <bead> stage:parked`).
+  The bead resumes the stage that parked it: a spec, implement or learn
+  session that failed or asked a question runs again in its own session
+  (ADR-0009); a verify that failed with its retries used is verified again.
+  A rejected PR's finished lesson resumes at spec, for the re-plan it asked
+  for.
+- **Choose the stage:** add `stage:<stage>` next to `stage:parked` (`bd
+  label add <bead> stage:spec`). The bead resumes there, and the scheduler
+  drops `stage:parked`. `stage:spec` is the explicit restart from scratch.
+  Add the label; do not replace `stage:parked` with it.
+
+Either way the scheduler appends an `unparked` ledger record (stage
+`parked`, `resume: <stage>`) before it moves the label. The record resets
+the verify retry budget, since a human has looked at the bead, and the
+resumed session is told a human released it and why it had parked.
 
 ## Gates (checked every tick, all deterministic)
 
@@ -90,7 +124,7 @@ session; end with the `===AGENTDECK_DONE===` sentinel. Prompts are versioned
 files in `prompts/`, so a change to how the factory works is a reviewed diff.
 
 A stage that runs again for the same bead (a verify-fail retry, a relaunch
-after a usage-limit park, a spec after an unpark) **resumes its existing
+after a usage-limit park, a stage resumed by an unpark) **resumes its existing
 session** instead of launching one, since its title is taken: greenhouse
 starts it again if it is stopped and sends it `prompts/retry.md` with why it
 runs again. Only a reply written after that message counts as the run's
@@ -110,6 +144,9 @@ polls session state itself and needs no notify-daemon.
 
 One JSONL line per stage run in `.greenhouse/ledger.jsonl` (gitignored), with
 bead, stage, session id, start/end, quota before/after, retries and outcome.
+Two kinds of line are not stage runs and carry stage `parked`: an unpark
+(`outcome: unparked`) and a park the scheduler made without a run (a bead
+closed locally with nothing to resume).
 `greenhouse report` rolls it up: quota used per merged PR, cycle time, park
 rate, retries, and rejection reasons. This is how we judge whether the factory
 is working, rather than going by impressions.

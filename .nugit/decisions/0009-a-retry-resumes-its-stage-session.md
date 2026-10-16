@@ -62,7 +62,8 @@ an unpark, collided the same way.
   none, a reply identical to the previous one is not seen as new and the run
   times out instead of being misread.
 - Unparking still restarts the bead at spec (ADR-0007), now in its existing
-  spec session, which is told to re-read the bead.
+  spec session, which is told to re-read the bead. (ADR-0010: an unpark now
+  resumes the stage that parked, in that stage's session.)
 
 ### Rejected alternatives
 - **Unique titles per attempt (`gh-implement-<bead>-2`).** Loses the

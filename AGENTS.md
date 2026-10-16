@@ -22,6 +22,11 @@ scripts/beads-export.sh                    # regenerate .beads/plans/ — never 
 **Keep commits cheap (ADR-0005).** Git carries the plan, not the run:
 - Never commit a bead's in-progress state or stage labels; the export strips them.
 - Your step's PR closes its own bead. Merge means closed; there are no follow-up bead commits.
+  Your local `bd close` is not "done": greenhouse reads done from the plan on
+  `origin/main` (ADR-0010), so a dependent waits for your merge.
+- To release a bead greenhouse parked, remove `stage:parked` (it resumes the
+  stage that parked), or add `stage:spec` to restart it from scratch
+  (docs/DESIGN.md "Parking and unparking").
 - Your PR changes only your bead's line in `.beads/plans/`: closing it, plus
   its spec fields (`acceptance_criteria`, `design`, `notes`, ADR-0008). If the export
   touched other lines (another session's local state), restore them with
