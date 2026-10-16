@@ -56,7 +56,15 @@ marked ready for review only after it is validated. A human merges. The first pr
 | `implement` | 1 session, turn-capped | bead + spec + context | commits on a worktree branch, PR opened as **draft** | → `parked` |
 | `verify` | **no** | the PR branch | pass → `gh pr ready`; fail → log | 1 retry: log goes back to implement; then `parked` |
 | `review` | **human** | ready PR | merge → bead closed | reject → `learn` |
-| `learn` | 1 short session | rejection reason + diff | `.nugit/lessons/*.md` (proposed) | — |
+| `learn` | 1 short session | rejected PR (diff, review/close comment) | one `.nugit/lessons/*.md`, `status: proposed`, on its own **draft** PR | PR fails the lesson check → `parked` |
+
+A rejection is the human closing the PR unmerged; the latest review or PR
+comment (`gh pr close -c "why"`) is its reason, kept in the ledger. Before
+it accepts `learn-done`, the scheduler checks the learn PR with no LLM
+(`internal/learncheck`): open, draft, changing only `.nugit/lessons/`, and
+every new lesson `status: proposed`. The lesson PR carries no greenhouse
+label, so it never holds back implement launches. Either way the bead parks;
+the human ratifies the lesson by merging it and running `nugit ratify`.
 
 The bead label records the stage (`stage:spec|implement|verify|review|parked`).
 The scheduler's only memory is the labels, `agent-deck session children --json`

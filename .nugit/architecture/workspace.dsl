@@ -35,6 +35,9 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       report = component "report" "Pure ledger rollup: quota per merged PR, cycle time, parks, retries, rejects, and the scoped-memory join and comparison. No I/O." {
         properties { paths "internal/report/**" }
       }
+      learncheck = component "learncheck" "Pure check of a learn session's PR: open, draft, only new status: proposed lessons under .nugit/lessons/. No I/O." {
+        properties { paths "internal/learncheck/**" }
+      }
       memory = component "memory" "Reads nugit's usage log (.nugit/.cache/usage.jsonl) and a stage branch's first commit via git." {
         properties { paths "internal/memory/**" }
       }
@@ -52,6 +55,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       cli -> ledger "records runs"
       cli -> report "greenhouse report"
       cli -> memory "reads the nugit usage log and first commits"
+      cli -> learncheck "checks a learn PR before accepting learn-done"
       report -> ledger "rolls up records"
       report -> stage "reads outcomes as event kinds"
       config -> stage "names LLM stages"

@@ -16,6 +16,7 @@ import (
 	"github.com/n8o/greenhouse/internal/launch"
 	"github.com/n8o/greenhouse/internal/ledger"
 	"github.com/n8o/greenhouse/internal/plan"
+	"github.com/n8o/greenhouse/internal/report"
 	"github.com/n8o/greenhouse/internal/verify"
 )
 
@@ -93,6 +94,16 @@ func (g *fakeGH) PR(_ context.Context, n int) (PR, error) {
 		return PR{}, fmt.Errorf("no PR %d", n)
 	}
 	return *pr, nil
+}
+
+func (g *fakeGH) PRByBranch(_ context.Context, branch string) (PR, error) {
+	var newest PR
+	for _, pr := range g.prs {
+		if pr.HeadRef == branch && pr.Number > newest.Number {
+			newest = *pr
+		}
+	}
+	return newest, nil
 }
 
 func (g *fakeGH) AddLabel(_ context.Context, n int) error {
@@ -273,6 +284,123 @@ func TestTickHappyPath(t *testing.T) {
 	}
 	// p-1 closed unblocks p-2, which starts on this same tick.
 	w.want(w.stage("p-2") == "spec", "p-2 must start once p-1 closes, got %q", w.stage("p-2"))
+}
+
+// toLearn drives p-1 to a ready PR 7 that the human then closes with a
+// comment, and ticks the review: p-1 moves to learn and its session s3
+// launches.
+func (w *world) toLearn() {
+	w.t.Helper()
+	w.toVerify()
+	w.tick() // collect s2, verify passes: review
+	pr := w.gh.prs[7]
+	pr.State, pr.Reason = "CLOSED", "wrong layer: use the gh adapter"
+	w.tick() // review records the rejection; learn launches
+}
+
+const learnBranch = "feature/p-1-learn"
+
+// learnPR is the learn session's draft PR 8, which adds lesson x.md with
+// status, on top of files.
+func (w *world) learnPR(status string, files ...string) {
+	const path = ".nugit/lessons/x.md"
+	w.gh.prs[8] = &PR{Number: 8, State: "OPEN", IsDraft: true, HeadRef: learnBranch, Files: append([]string{path}, files...)}
+	w.runner.Replies["git cat-file -e origin/main:"+path] = verify.Reply{Err: errors.New("exit status 128")}
+	w.runner.Replies["git show origin/"+learnBranch+":"+path] = verify.Reply{
+		Out: "---\nschema_version: 1\nid: LESSON-x\ntype: lesson\nscope: cli\nstatus: " + status + "\n---\n# Lesson — x\n"}
+}
+
+func TestTickRejectionLearnsALesson(t *testing.T) {
+	w := newWorld(t)
+	w.toLearn()
+	recs := w.records()
+	rev := recs[len(recs)-1]
+	w.want(rev.Stage == "review" && rev.Outcome == "rejected" && rev.PR == 7 && rev.Reason == "wrong layer: use the gh adapter",
+		"the rejection and its reason must be in the ledger: %+v", rev)
+	rep := report.Build(recs, nil, report.Options{})
+	w.want(rep.Rejects.Count == 1 && rep.Rejects.Reasons[0].Reason == "wrong layer: use the gh adapter",
+		"report must list the reject: %+v", rep.Rejects)
+	w.want(w.stage("p-1") == "learn" && len(w.deck.Launched) == 3 && w.deck.Launched[2].Title == "gh-learn-p-1",
+		"want a learn session, got %q, %+v", w.stage("p-1"), w.deck.Launched)
+	prompt := w.deck.Prompts[len(w.deck.Prompts)-1]
+	for _, want := range []string{"PR **#7**", "`feature/p-1-implement`", "gh pr diff 7", "wrong layer: use the gh adapter", learnBranch} {
+		w.want(strings.Contains(prompt, want), "learn prompt lacks %q:\n%s", want, prompt)
+	}
+	w.idle()
+
+	w.learnPR("proposed")
+	w.deck.finish("s3", result(`{"kind":"learn-done"}`))
+	w.tick()
+	last := w.records()[len(w.records())-1]
+	w.want(last.Stage == "learn" && last.Outcome == "learn-done" && last.PR == 8, "the learn record names the lesson PR: %+v", last)
+	w.want(w.stage("p-1") == "parked", "learn-done parks the bead for the human, got %q", w.stage("p-1"))
+	w.want(!slices.Contains(w.gh.prs[8].Labels, gate.PRLabel) && w.gh.prs[8].IsDraft, "the lesson PR is left alone: %+v", w.gh.prs[8])
+	w.want(len(w.records()) == len(recs)+1, "one learn record")
+	w.idle()
+}
+
+func TestTickLearnCheckFailureNeedsHuman(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		setup func(w *world)
+		want  string
+	}{
+		{"no PR", func(*world) {}, "no PR has head " + learnBranch},
+		{"ready, not draft", func(w *world) { w.learnPR("proposed"); w.gh.prs[8].IsDraft = false }, "not a draft"},
+		{"touches code", func(w *world) { w.learnPR("proposed", "cmd/greenhouse/tick.go") }, "outside .nugit/lessons/"},
+		{"active lesson", func(w *world) { w.learnPR("active") }, `status "active"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.toLearn()
+			tt.setup(w)
+			w.deck.finish("s3", result(`{"kind":"learn-done"}`))
+			w.tick()
+			last := w.records()[len(w.records())-1]
+			w.want(last.Stage == "learn" && last.Outcome == "needs-human" && strings.Contains(last.Reason, tt.want) && last.PR == 0,
+				"want needs-human with %q, got %+v", tt.want, last)
+			w.want(w.stage("p-1") == "parked", "got %q", w.stage("p-1"))
+			w.idle()
+		})
+	}
+}
+
+// Learn needs the rejected PR; one gh cannot read parks the bead.
+func TestTickLearnWithoutRejectedPRParks(t *testing.T) {
+	w := newWorld(t)
+	w.toVerify()
+	w.tick()
+	w.gh.prs[7].State = "CLOSED"
+	w.tick() // review: rejected (fallback reason); learn reads PR 7, then it is gone
+	w.want(w.stage("p-1") == "learn" && len(w.deck.Launched) == 3, "learn launches while PR 7 reads, got %q", w.stage("p-1"))
+	rev := w.records()[len(w.records())-1]
+	w.want(strings.Contains(rev.Reason, "closed without merging"), "the fallback reason: %+v", rev)
+
+	w = newWorld(t)
+	w.toVerify()
+	w.tick()
+	w.gh.prs[7].State = "CLOSED"
+	w.s.gh = &goneAfterReview{fakeGH: w.gh}
+	w.tick()
+	last := w.records()[len(w.records())-1]
+	w.want(last.Stage == "learn" && last.Outcome == "needs-human" && strings.Contains(last.Reason, "could not read the rejected PR #7"),
+		"want needs-human, got %+v", last)
+	w.want(w.stage("p-1") == "parked" && len(w.deck.Launched) == 2, "no learn launch; parked, got %q", w.stage("p-1"))
+	w.idle()
+}
+
+// goneAfterReview answers the review's read of a PR, then fails every
+// later one.
+type goneAfterReview struct {
+	*fakeGH
+	reads int
+}
+
+func (g *goneAfterReview) PR(ctx context.Context, n int) (PR, error) {
+	if g.reads++; g.reads > 1 {
+		return PR{}, errors.New("gh: HTTP 502")
+	}
+	return g.fakeGH.PR(ctx, n)
 }
 
 func TestTickVerifyFailRetryThenPark(t *testing.T) {

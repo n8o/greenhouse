@@ -14,7 +14,7 @@ var promptDir = filepath.Join("..", "..", "prompts")
 
 func req(st stage.Stage) Request {
 	return Request{Bead: "x-1", Title: "Do the thing", DoneWhen: "Done when: it works.",
-		Spec: "- [ ] go test passes", Reason: "because", Stage: st}
+		Spec: "- [ ] go test passes", Reason: "because", PR: 31, HeadRef: "feature/x-1-implement", Stage: st}
 }
 
 func TestRenderCommittedPrompts(t *testing.T) {
@@ -34,7 +34,16 @@ func TestRenderCommittedPrompts(t *testing.T) {
 			`bd close x-1 --reason "this PR"`, "**only the x-1 line**", // ADR-0005
 			"decision:", "Agent-Deck-Session:",
 		},
-		stage.Learn: {`{"kind":"learn-done"}`, ".nugit/lessons/", "status: proposed", "because"},
+		stage.Learn: {
+			`{"kind":"learn-done"}`, ".nugit/lessons/", "because",
+			"PR **#31**", "`feature/x-1-implement`", "feature/x-1-learn", // rejected PR, its branch, the learn branch
+			"gh pr diff 31", "gh pr view 31 --comments", "headRefOid",
+			// nugit lesson front matter and body
+			"schema_version: 1", "id: LESSON-<slug>", "type: lesson", "scope:", "status: proposed",
+			"created:", "provenance:", "commit:", "confidence: low",
+			"**Trigger:**", "**Insight:**", "**Keywords:**",
+			"Never set `status: active`", "`nugit ratify`", "gh pr create --draft", `"lesson: <slug> (from #31)"`,
+		},
 	}
 	for st, want := range perStage {
 		t.Run(string(st), func(t *testing.T) {
@@ -66,6 +75,11 @@ func TestRenderRejects(t *testing.T) {
 	r.Reason = ""
 	if _, err := Render(promptDir, r, 1); err == nil {
 		t.Error("learn without a rejection reason must fail")
+	}
+	r = req(stage.Learn)
+	r.PR = 0
+	if _, err := Render(promptDir, r, 1); err == nil {
+		t.Error("learn without the rejected PR must fail")
 	}
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "contract.md"), []byte(`{{define "contract"}}{{end}}`), 0o644)
