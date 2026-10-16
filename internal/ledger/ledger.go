@@ -68,6 +68,24 @@ type Run struct {
 	Start   time.Time `json:"start"`
 	Before  Quota     `json:"quota_before"`
 	Retries int       `json:"retries"`
+	// Reuse is set when the run continues the session of an earlier run of
+	// the same stage (a retry) instead of launching one: Session is then
+	// that session from the start.
+	Reuse *Reuse `json:"reuse,omitempty"`
+}
+
+// Reuse is how a retry run continues an existing session.
+type Reuse struct {
+	// PriorAt and PriorDigest mark the session's last reply when the retry
+	// was decided: the previous attempt's completion, never this run's.
+	PriorAt     time.Time `json:"prior_at,omitzero"`
+	PriorDigest string    `json:"prior_digest,omitempty"`
+	// PriorRuns is how many records the session had then; this run is
+	// recorded once it has more.
+	PriorRuns int `json:"prior_runs"`
+	// Sent is set once the retry prompt is in the session. Until then the
+	// scheduler (re)sends it rather than collect the session.
+	Sent bool `json:"sent,omitempty"`
 }
 
 // Park holds launches until a usage-limit stop resets.
@@ -239,6 +257,18 @@ func Has(recs []Record, session string) bool {
 		}
 	}
 	return false
+}
+
+// Count returns how many records session has. A reused session has one
+// record per run, all with its id.
+func Count(recs []Record, session string) int {
+	n := 0
+	for _, r := range recs {
+		if session != "" && r.Session == session {
+			n++
+		}
+	}
+	return n
 }
 
 // Retries counts bead's failed verify runs since its last spec run: how many

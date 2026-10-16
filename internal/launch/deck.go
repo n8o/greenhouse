@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Deck is the agent-deck CLI (ADR-0003). It is the only way greenhouse starts
@@ -28,6 +29,12 @@ type Deck interface {
 	Children(ctx context.Context, parent string) ([]Child, error)
 	// Stop stops a session's process; its worktree and tmux session stay.
 	Stop(ctx context.Context, id string) error
+	// Find returns the registered session titled title, whatever its
+	// status; ok is false when there is none.
+	Find(ctx context.Context, title string) (s Listed, ok bool, err error)
+	// Start starts a stopped session's process again. A Claude session
+	// resumes its own conversation.
+	Start(ctx context.Context, id string) error
 }
 
 // LaunchArgs is one `agent-deck launch` call.
@@ -102,6 +109,28 @@ func busy(status string) bool { return status == "starting" || status == "runnin
 type Output struct {
 	ClaudeSessionID string `json:"claude_session_id"`
 	Content         string `json:"content"`
+	// Timestamp is when the message was written, from the transcript
+	// (RFC 3339); "" when agent-deck does not know.
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// At returns Timestamp parsed, or the zero time.
+func (o Output) At() time.Time {
+	t, err := time.Parse(time.RFC3339Nano, o.Timestamp)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// Listed is one entry of `agent-deck list -json`.
+type Listed struct {
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Group           string `json:"group"`
+	Status          string `json:"status"`
+	ClaudeSessionID string `json:"claude_session_id"`
+	Path            string `json:"path"`
 }
 
 // Child is one entry of `agent-deck session children -json`.
@@ -195,6 +224,40 @@ func (c *CLI) Send(ctx context.Context, id, messageFile string) error {
 // Stop runs `agent-deck session stop <id> -json`.
 func (c *CLI) Stop(ctx context.Context, id string) error {
 	return c.call(ctx, nil, "session", "stop", id, "-json")
+}
+
+// Find runs `agent-deck list -json` and returns the session titled title,
+// preferring one in the greenhouse group if several share it.
+func (c *CLI) Find(ctx context.Context, title string) (Listed, bool, error) {
+	var all []Listed
+	if err := c.call(ctx, &all, "list", "-json"); err != nil {
+		return Listed{}, false, err
+	}
+	s, ok := findTitle(all, title)
+	return s, ok, nil
+}
+
+func findTitle(all []Listed, title string) (Listed, bool) {
+	var found []Listed
+	for _, s := range all {
+		if s.Title == title {
+			found = append(found, s)
+		}
+	}
+	for _, s := range found {
+		if s.Group == Group || strings.HasPrefix(s.Group, Group+"/") {
+			return s, true
+		}
+	}
+	if len(found) > 0 {
+		return found[0], true
+	}
+	return Listed{}, false
+}
+
+// Start runs `agent-deck session start -json <id>`.
+func (c *CLI) Start(ctx context.Context, id string) error {
+	return c.call(ctx, nil, "session", "start", "-json", id)
 }
 
 // Children runs `agent-deck session children <parent> -json`.

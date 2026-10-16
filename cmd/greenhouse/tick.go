@@ -191,8 +191,17 @@ func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error 
 	if err != nil {
 		return err
 	}
-	if ledger.Has(t.recs, k.ID) {
-		if run != nil && run.Session == k.ID {
+	ours := run != nil && run.Session == k.ID
+	if ours && run.Reuse != nil && !run.Reuse.Sent {
+		return nil // the retry prompt is not sent yet; the launch step sends it
+	}
+	collected := ledger.Has(t.recs, k.ID)
+	if ours && run.Reuse != nil {
+		// A reused session has records of its earlier runs; only this run's counts.
+		collected = ledger.Count(t.recs, k.ID) > run.Reuse.PriorRuns
+	}
+	if collected {
+		if ours {
 			if err := s.deleteRun(t, id); err != nil {
 				return err
 			}
@@ -218,7 +227,7 @@ func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error 
 	now := s.now()
 	rec := ledger.Record{Bead: id, Stage: string(st), Session: k.ID, Start: run.Start, End: now,
 		Before: run.Before, After: quotaOf(t.in.Reading), Retries: run.Retries}
-	ev, content, done, err := s.launcher.Collect(ctx, k.ID, st)
+	ev, content, done, err := s.launcher.Collect(ctx, k.ID, st, priorOf(run))
 	if !done {
 		if err != nil {
 			return err
@@ -254,6 +263,15 @@ func (s *scheduler) collect(ctx context.Context, t *tick, k launch.Child) error 
 		return err
 	}
 	return s.act(id, "stop session "+k.ID, func() error { return s.deck.Stop(ctx, k.ID) })
+}
+
+// priorOf is where run's reused session ended its previous attempt; the
+// zero Prior for a run in a session of its own.
+func priorOf(run *ledger.Run) launch.Prior {
+	if run == nil || run.Reuse == nil {
+		return launch.Prior{}
+	}
+	return launch.Prior{At: run.Reuse.PriorAt, Digest: run.Reuse.PriorDigest}
 }
 
 // timeoutEvent is how a session stopped at its wall-clock limit fails.
@@ -311,7 +329,7 @@ func (s *scheduler) step(ctx context.Context, t *tick, b *plan.Bead) (bool, erro
 		case run.Stage != string(st):
 			s.say(b.ID, "open %s run does not match stage %q (changed by hand?); dropping it", run.Stage, st)
 			return true, s.deleteRun(t, b.ID)
-		case run.Session == "":
+		case run.Session == "", run.Reuse != nil && !run.Reuse.Sent:
 			return s.launch(ctx, t, b, st, run)
 		case !slices.ContainsFunc(t.kids, func(k launch.Child) bool { return k.ID == run.Session }):
 			// Removed outside greenhouse; its outcome is unknown.
@@ -502,6 +520,26 @@ func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.
 	}
 	req := launch.Request{Bead: b.ID, Title: b.Title, DoneWhen: b.Description, Spec: specOf(*b),
 		Reason: launchReason(t.recs, b.ID, st), Stage: st, Branch: launch.DefaultBranch(b.ID, st)}
+
+	// A session titled for this stage still exists: its title is taken, and
+	// its context and worktree are worth keeping, so the retry continues it.
+	ex, found, err := s.launcher.Find(ctx, b.ID, st)
+	if err != nil {
+		return false, err
+	}
+	if found {
+		return s.resume(ctx, t, b, run, req, ex)
+	}
+	if run.Reuse != nil {
+		s.say(b.ID, "  session %s chosen for the retry is gone; launching a new one", run.Session)
+		fresh := *run
+		fresh.Session, fresh.Reuse = "", nil
+		if err := s.putRun(t, fresh, "clear the reused session from the open run"); err != nil {
+			return false, err
+		}
+		run = &fresh
+	}
+
 	req.ExistingBranch = s.branchExists(ctx, req.Branch)
 	if s.dry {
 		s.say(b.ID, "  would launch %s on %s (existing branch: %v)", launch.Title(b.ID, st), req.Branch, req.ExistingBranch)
@@ -536,6 +574,97 @@ func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.
 		return true, err
 	}
 	return true, s.deleteRun(t, b.ID)
+}
+
+// resume continues ex, the existing session of b's stage, as the open run:
+// the run records the session and where its previous attempt ended before
+// anything is sent, then the launcher restarts the session if it is stopped
+// and sends it the retry prompt (ADR-0009).
+func (s *scheduler) resume(ctx context.Context, t *tick, b *plan.Bead, run *ledger.Run, req launch.Request, ex launch.Existing) (bool, error) {
+	st := req.Stage
+	req.Reason = retryReason(t.recs, b.ID, st, req.Reason)
+	if run.Reuse == nil || run.Session != ex.ID {
+		r := *run
+		r.Session = ex.ID
+		r.Reuse = &ledger.Reuse{PriorAt: ex.Prior.At, PriorDigest: ex.Prior.Digest,
+			PriorRuns: ledger.Count(t.recs, ex.ID)}
+		if err := s.putRun(t, r, fmt.Sprintf("reuse session %s (%s) for the open %s run", ex.ID, ex.Status, st)); err != nil {
+			return false, err
+		}
+		run = &r
+	} else {
+		// A tick crashed between choosing the session and recording the
+		// send: keep the baseline taken before anything was sent.
+		ex.Prior = priorOf(run)
+	}
+	if s.dry {
+		s.say(b.ID, "  would resume %s (%s): start it if stopped, then send the retry prompt", ex.Title, ex.Status)
+		return true, nil
+	}
+	s.say(b.ID, "  resume %s (%s) on %s", ex.Title, ex.Status, req.Branch)
+	r, err := s.launcher.Resume(ctx, req, ex)
+	if r.Sent || r.Adopted {
+		sent := *run
+		reuse := *run.Reuse
+		reuse.Sent = true
+		sent.Reuse = &reuse
+		what := "record the retry sent to " + ex.ID
+		switch {
+		case r.Adopted:
+			what = "adopt " + ex.ID + ", already working, as the retry"
+		case r.Restarted:
+			what = "record the retry sent to " + ex.ID + " (started again)"
+		}
+		if perr := s.putRun(t, sent, what); perr != nil {
+			return true, errors.Join(err, perr)
+		}
+		if i := slices.IndexFunc(t.kids, func(k launch.Child) bool { return k.ID == ex.ID }); i >= 0 {
+			t.kids[i].Status = "starting"
+		} else {
+			t.kids = append(t.kids, launch.Child{ID: ex.ID, Title: ex.Title, Status: "starting"})
+		}
+		if st == stage.Implement {
+			t.in.Implement++
+		}
+	}
+	if err == nil {
+		return true, nil
+	}
+	if r.Sent {
+		// The prompt is in the session; collect judges its reply.
+		s.say(b.ID, "  resume problem: %v", err)
+		return true, nil
+	}
+	rec := ledger.Record{Bead: b.ID, Stage: string(st), Session: ex.ID, Start: run.Start, End: s.now(),
+		Before: run.Before, After: quotaOf(t.in.Reading), Retries: run.Retries,
+		Outcome: string(stage.NeedsHuman), Reason: fmt.Sprintf("could not resume the %s session %s: %v", st, ex.ID, err)}
+	if err := s.record(t, rec); err != nil {
+		return true, err
+	}
+	return true, s.deleteRun(t, b.ID)
+}
+
+// retryReason tells a resumed stage session why it runs again. reason is
+// the launch reason (the verify log of an implement retry), if any.
+func retryReason(recs []ledger.Record, bead string, st stage.Stage, reason string) string {
+	if reason != "" && st == stage.Implement {
+		return "Verification of your draft PR failed. Its log:\n\n" + reason
+	}
+	if reason != "" {
+		return reason
+	}
+	last := ledger.Last(recs, bead)
+	switch {
+	case last == nil:
+		return fmt.Sprintf("greenhouse is running the %s stage again.", st)
+	case last.Stage == string(st) && last.Outcome == ledger.UsageLimit:
+		return "A Claude usage limit stopped your previous turn before it finished. The limit has reset: continue where you left off."
+	}
+	why := fmt.Sprintf("The bead went back through the pipeline: its last run was %s, %s", last.Stage, last.Outcome)
+	if r := firstLine(last.Reason); r != "" {
+		why += ": " + r
+	}
+	return why + fmt.Sprintf(". So the %s stage runs again.", st)
 }
 
 // vanished records an open run whose session no longer exists as failed,

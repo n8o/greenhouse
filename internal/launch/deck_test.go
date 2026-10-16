@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fixture returns a recorded agent-deck -json reply from testdata.
@@ -90,6 +91,36 @@ func TestCLIParsesJSON(t *testing.T) {
 	}
 	if want := []string{"session", "send", "s1", "-message-file", "/tmp/p.md", "-q"}; !slices.Equal(args, want) {
 		t.Errorf("send args = %q", args)
+	}
+	if !out.At().Equal(time.Date(2026, 9, 30, 2, 14, 30, 20e6, time.UTC)) {
+		t.Errorf("Output.At = %v, want the transcript timestamp", out.At())
+	}
+
+	// Find matches the exact title and prefers the greenhouse group.
+	found, ok, err := scripted(fixture(t, "list.json"), nil, &args).Find(ctx, "gh-implement-x-1")
+	if err != nil || !ok {
+		t.Fatalf("Find = %v, %v", ok, err)
+	}
+	if want := (Listed{ID: "f7035749-1", Title: "gh-implement-x-1", Group: "greenhouse", Status: "stopped",
+		ClaudeSessionID: "c-1", Path: "/work/repo/.worktrees/feature-x-1-implement"}); found != want {
+		t.Errorf("Find = %+v, want %+v", found, want)
+	}
+	if want := []string{"list", "-json"}; !slices.Equal(args, want) {
+		t.Errorf("find args = %q", args)
+	}
+	if _, ok, err := scripted(fixture(t, "list.json"), nil, &args).Find(ctx, "gh-implement-x-2"); ok || err != nil {
+		t.Errorf("Find of an unknown title = %v, %v; want none", ok, err)
+	}
+
+	if err := scripted([]byte(`{"success":true}`), nil, &args).Start(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"session", "start", "-json", "s1"}; !slices.Equal(args, want) {
+		t.Errorf("start args = %q", args)
+	}
+	notFound := []byte(`{"code":"NOT_FOUND","error":"session 's9' not found","success":false}`)
+	if err := scripted(notFound, errors.New("exit status 2"), &args).Start(ctx, "s9"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("start of a missing session = %v", err)
 	}
 }
 

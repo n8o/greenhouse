@@ -25,22 +25,62 @@ type FakeDeck struct {
 	ChildErr error
 	Stopped  []string // session ids stopped, in order
 	StopErr  error
+
+	// Sessions are registered sessions Find sees besides those in Kids.
+	Sessions []Listed
+	FindErr  error
+	Started  []string // session ids started again, in order
+	StartErr error
 }
 
-// Stop records id and marks it stopped in Kids.
+// Stop records id and marks it stopped in Kids and Sessions.
 func (f *FakeDeck) Stop(_ context.Context, id string) error {
 	if f.StopErr != nil {
 		return f.StopErr
 	}
 	f.Stopped = append(f.Stopped, id)
+	f.setStatus(id, "stopped")
+	return nil
+}
+
+// Start records id and marks it starting in Kids and Sessions.
+func (f *FakeDeck) Start(_ context.Context, id string) error {
+	f.Started = append(f.Started, id)
+	if f.StartErr != nil {
+		return f.StartErr
+	}
+	f.setStatus(id, "starting")
+	return nil
+}
+
+func (f *FakeDeck) setStatus(id, status string) {
 	for _, kids := range f.Kids {
 		for i := range kids {
 			if kids[i].ID == id {
-				kids[i].Status = "stopped"
+				kids[i].Status = status
 			}
 		}
 	}
-	return nil
+	for i := range f.Sessions {
+		if f.Sessions[i].ID == id {
+			f.Sessions[i].Status = status
+		}
+	}
+}
+
+// Find returns the session titled title from Sessions, then from Kids.
+func (f *FakeDeck) Find(_ context.Context, title string) (Listed, bool, error) {
+	if f.FindErr != nil {
+		return Listed{}, false, f.FindErr
+	}
+	all := append([]Listed(nil), f.Sessions...)
+	for _, kids := range f.Kids {
+		for _, k := range kids {
+			all = append(all, Listed{ID: k.ID, Title: k.Title, Group: Group, Status: k.Status})
+		}
+	}
+	s, ok := findTitle(all, title)
+	return s, ok, nil
 }
 
 // Launch records a and returns NextSession, echoing the pinned model and
