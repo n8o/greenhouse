@@ -30,7 +30,17 @@ const (
 	// UsageLimit marks a run stopped by a Claude usage limit. It carries no
 	// event: the stage is launched again once the park lifts.
 	UsageLimit = "usage-limit"
+	// Unparked marks a human releasing a parked bead (ADR-0010). Its Stage
+	// is ParkedStage and its Resume names the stage the bead resumes in. It
+	// resets the verify retry budget: a human has looked at the bead.
+	Unparked = "unparked"
 )
+
+// ParkedStage is the Stage of a record that is not a stage run: an unpark,
+// or a park the scheduler made without running a stage (a bead closed in
+// the local bd database whose close is not on the default branch, with no
+// run to resume).
+const ParkedStage = "parked"
 
 // Quota is a usage reading at one moment, in percent of each window; nil
 // fields were unknown.
@@ -56,7 +66,12 @@ type Record struct {
 	Reason   string `json:"reason,omitempty"`
 	PR       int    `json:"pr,omitempty"`
 	TimedOut bool   `json:"timed_out,omitempty"` // stopped at its wall-clock limit
+	// Resume is the stage an Unparked record resumes the bead in.
+	Resume string `json:"resume,omitempty"`
 }
+
+// IsRun reports whether r is a stage run, not an unpark or a scheduler park.
+func (r Record) IsRun() bool { return r.Stage != ParkedStage }
 
 // Run is a bead's open stage run, kept in runs/<bead>.json from just before
 // its launch until its Record is appended. Session is "" until the launch
@@ -246,6 +261,16 @@ func Last(recs []Record, bead string) *Record {
 	return nil
 }
 
+// LastRun returns bead's most recent stage run (IsRun), or nil.
+func LastRun(recs []Record, bead string) *Record {
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].Bead == bead && recs[i].IsRun() {
+			return &recs[i]
+		}
+	}
+	return nil
+}
+
 // Has reports whether a record for session exists.
 func Has(recs []Record, session string) bool {
 	if session == "" {
@@ -271,14 +296,15 @@ func Count(recs []Record, session string) int {
 	return n
 }
 
-// Retries counts bead's failed verify runs since its last spec run: how many
-// times verify has sent it back to implement in the current attempt.
+// Retries counts bead's failed verify runs since its last spec run or
+// unpark: how many times verify has sent it back to implement in the
+// current attempt.
 func Retries(recs []Record, bead string) int {
 	n := 0
 	for _, r := range recs {
 		switch {
 		case r.Bead != bead:
-		case r.Stage == "spec":
+		case r.Stage == "spec", r.Outcome == Unparked:
 			n = 0
 		case r.Stage == "verify" && r.Outcome == "verify-fail":
 			n++

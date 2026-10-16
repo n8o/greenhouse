@@ -147,6 +147,8 @@ func newWorld(t *testing.T) *world {
 			"git diff --name-status --no-renames abc HEAD -- .beads/plans/": {Out: "M\t.beads/plans/p.jsonl\n"},
 			"git show abc:.beads/plans/p.jsonl":                             {Out: `{"id":"p-1","status":"open"}` + "\n"},
 			"git show HEAD:.beads/plans/p.jsonl":                            {Out: `{"id":"p-1","status":"closed","close_reason":"this PR"}` + "\n"},
+			// The plan on origin/main: nothing has landed yet.
+			"git ls-tree --name-only origin/main -- .beads/plans/": {Out: ".beads/plans/p.jsonl\n"},
 		}},
 		clock: time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC),
 	}
@@ -159,7 +161,22 @@ func newWorld(t *testing.T) *world {
 	w.s.launcher.PollInterval = time.Millisecond
 	w.s.launcher.DeliveryPolls = 3
 	w.s.local = time.UTC
+	w.land()
 	return w
+}
+
+// land sets the plan on origin/main: ids are closed there, every other
+// bead of the plan is open.
+func (w *world) land(ids ...string) {
+	var lines []string
+	for _, b := range w.plan.Beads {
+		status := "open"
+		if slices.Contains(ids, b.ID) {
+			status = "closed"
+		}
+		lines = append(lines, fmt.Sprintf(`{"id":%q,"status":%q}`, b.ID, status))
+	}
+	w.runner.Replies["git show origin/main:.beads/plans/p.jsonl"] = verify.Reply{Out: strings.Join(lines, "\n") + "\n"}
 }
 
 func (w *world) tick() {
@@ -266,6 +283,7 @@ func TestTickHappyPath(t *testing.T) {
 	w.idle()
 
 	pr.State = "MERGED"
+	w.land("p-1") // the merge puts the PR's close of p-1 on main
 	w.tick()
 	w.want(w.plan.Beads[0].Status == "closed" && w.stage("p-1") == "done", "merged bead must close: %+v", w.plan.Beads[0])
 	if got, want := outcomes(w.records()), "spec:spec-done implement:implement-done verify:verify-pass review:merged"; got != want {

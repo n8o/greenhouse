@@ -42,42 +42,92 @@ type Dependency struct {
 // Approved reports whether the bead carries ApprovedLabel.
 func (b Bead) Approved() bool { return slices.Contains(b.Labels, ApprovedLabel) }
 
-// Done reports whether the bead is finished: closed, and not still moving
-// through the factory. An implement session closes its own bead inside its
-// PR (ADR-0005), and in a shared bd database that close shows up before the
-// PR merges; a stage label other than stage:done means it is not done yet.
-func (b Bead) Done() bool {
-	return b.Status == "closed" && (b.Stage() == "" || b.Stage() == "done")
+// ExportDir holds the exported plan, one JSONL file per plan (ADR-0005).
+const ExportDir = ".beads/plans/"
+
+// Landed is the set of beads whose close reached the default branch: the
+// beads closed in the plan export (ExportDir) at origin/<default>. It, and
+// not the local bd database, is what "done" means (ADR-0010). A stage
+// session closes its own bead inside its PR (ADR-0005), and in a shared bd
+// database that close shows up long before the PR merges, if it ever does;
+// only the merge puts the close on the default branch.
+type Landed map[string]bool
+
+// Done reports whether bead id is finished: its close is on the default
+// branch.
+func (l Landed) Done(id string) bool { return l[id] }
+
+// ParseLanded reads exported plan files (JSONL, one bead per line) and
+// returns the beads they hold as closed. A line that is not a bead is an
+// error: a plan the scheduler cannot read must not quietly read as "nothing
+// is done".
+func ParseLanded(files ...[]byte) (Landed, error) {
+	l := Landed{}
+	for _, f := range files {
+		for line := range bytes.Lines(f) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var b struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(line, &b); err != nil || b.ID == "" {
+				return nil, fmt.Errorf("unreadable line under %s: %.80q", ExportDir, line)
+			}
+			if b.Status == "closed" {
+				l[b.ID] = true
+			}
+		}
+	}
+	return l, nil
 }
 
 // Ready reports whether b can start: it is open, and every bead it is blocked
-// by is Done. A blocker missing from beads counts as open, so an unknown
-// dependency holds the bead rather than releasing it.
-func Ready(b Bead, beads []Bead) bool {
+// by is Done on the default branch. A blocker closed only in the local bd
+// database is not done, so a step never starts on top of an unmerged PR.
+func Ready(b Bead, landed Landed) bool {
 	if b.Status != "open" {
 		return false
 	}
-	for _, d := range b.Dependencies {
-		if d.Type != "" && d.Type != "blocks" {
-			continue
-		}
-		i := slices.IndexFunc(beads, func(x Bead) bool { return x.ID == d.DependsOn })
-		if i < 0 || !beads[i].Done() {
+	for _, d := range Blockers(b) {
+		if !landed.Done(d) {
 			return false
 		}
 	}
 	return true
 }
 
-// Stage returns the value of the bead's stage label, or "" if it has none.
-func (b Bead) Stage() string {
-	for _, l := range b.Labels {
-		if s, ok := strings.CutPrefix(l, StagePrefix); ok {
-			return s
+// Blockers returns the ids of the beads b is blocked by.
+func Blockers(b Bead) []string {
+	var ids []string
+	for _, d := range b.Dependencies {
+		if d.Type == "" || d.Type == "blocks" {
+			ids = append(ids, d.DependsOn)
 		}
 	}
-	return ""
+	return ids
 }
+
+// Stage returns the value of the bead's stage label, or "" if it has none.
+// A bead carrying stage:parked and another stage label is being released by
+// a human to that other stage (ADR-0010), so the other label wins; the
+// scheduler then makes it the only one.
+func (b Bead) Stage() string {
+	st := ""
+	for _, l := range b.Labels {
+		if s, ok := strings.CutPrefix(l, StagePrefix); ok {
+			if s != parked {
+				return s
+			}
+			st = s
+		}
+	}
+	return st
+}
+
+// parked is stage.Parked; plan does not import stage.
+const parked = "parked"
 
 // Source lists the beads of one plan.
 type Source interface {

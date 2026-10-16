@@ -97,13 +97,44 @@ func TestReady(t *testing.T) {
 		{ID: "p-3", Status: "open", Dependencies: dep("p-2")},
 		{ID: "p-4", Status: "open", Dependencies: dep("x-9")},
 		{ID: "p-5", Status: "in_progress"},
-		{ID: "p-6", Status: "closed", Labels: []string{"stage:verify"}}, // closed in its unmerged PR
+		{ID: "p-6", Status: "closed"}, // closed locally in its unmerged PR, no stage label
 		{ID: "p-7", Status: "open", Dependencies: dep("p-6")},
+		{ID: "p-8", Status: "open", Dependencies: []Dependency{{DependsOn: "p-6", Type: "related"}}},
 	}
-	for i, want := range []bool{false, true, false, false, false, false, false} {
-		if got := Ready(beads[i], beads); got != want {
+	landed := Landed{"p-1": true}
+	for i, want := range []bool{false, true, false, false, false, false, false, true} {
+		if got := Ready(beads[i], landed); got != want {
 			t.Errorf("Ready(%s) = %v, want %v", beads[i].ID, got, want)
 		}
+	}
+}
+
+func TestParseLanded(t *testing.T) {
+	a := []byte(`{"id":"p-1","status":"closed","close_reason":"PR #1"}` + "\n" + `{"id":"p-2","status":"open"}` + "\n\n")
+	b := []byte(`{"id":"q-1","status":"closed"}`)
+	l, err := ParseLanded(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Done("p-1") || l.Done("p-2") || !l.Done("q-1") || l.Done("p-9") {
+		t.Errorf("landed %v", l)
+	}
+	if _, err := ParseLanded([]byte("{not json\n")); err == nil {
+		t.Error("an unreadable plan line must be an error, not an empty Landed")
+	}
+	if _, err := ParseLanded([]byte(`{"status":"closed"}`)); err == nil {
+		t.Error("a line without an id must be an error")
+	}
+}
+
+func TestStageReleasedLabelWins(t *testing.T) {
+	for _, labels := range [][]string{{"stage:parked", "stage:spec"}, {"stage:spec", "stage:parked"}} {
+		if got := (Bead{Labels: labels}).Stage(); got != "spec" {
+			t.Errorf("Stage(%q) = %q, want spec", labels, got)
+		}
+	}
+	if got := (Bead{Labels: []string{"stage:parked"}}).Stage(); got != "parked" {
+		t.Errorf("Stage(parked) = %q", got)
 	}
 }
 
