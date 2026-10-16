@@ -1,0 +1,32 @@
+ledger: 5 runs over 2 beads
+
+quota per merged PR: 1 merged
+PR    BEAD  5H PTS  7D PTS  UNKNOWN RUNS
+#4    gr-1  10.0    3.0     2
+mean        10.0    3.0
+
+cycle time: 2 beads, 1 finished, median 1h40m0s
+BEAD  STATE   CYCLE
+gr-1  merged  1h40m0s
+gr-2  open    5m0s
+
+parks: 1 of 2 beads (50%) · usage-limit stops: 0 (not parks)
+COUNT  REASON
+1      too vague
+
+retries: 0 verify failures · 0 timed-out runs
+BEAD  MAX RETRIES  VERIFY FAILS
+gr-1  0            0
+beads by verify fails: 0 fails: 1
+
+rejects: 0
+
+scoped memory: 2 of 3 LLM runs loaded context · 2 context calls (0 unattributed)
+before first commit: 1 (2 runs unknown) · empty bundles: 0 · unresolved paths: 0
+BEAD  STAGE      SESSION  JOIN     CALLS  BEFORE COMMIT  EMPTY  UNRESOLVED
+gr-1  spec       s1       session  1      ?              0      0
+gr-1  implement  s2       branch   1      1              0      0
+gr-2  spec       s3       none     0      ?              0      0
+
+loaded context vs none (by bead): loaded n=1 · none n=1
+too few runs to compare (need 5 per group)

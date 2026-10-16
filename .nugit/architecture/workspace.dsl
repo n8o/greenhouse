@@ -5,7 +5,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
 
     sys = softwareSystem "greenhouse" {
 
-      cli = component "cli" "greenhouse command and scheduler: tick / run (lock, ledger, gh adapter) / status / doctor." {
+      cli = component "cli" "greenhouse command and scheduler: tick / run (lock, ledger, gh adapter) / status / doctor / report." {
         properties { paths "cmd/greenhouse/**" }
       }
       config = component "config" "greenhouse.toml: repo, plan, caps, quota thresholds, verify commands." {
@@ -32,6 +32,12 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       ledger = component "ledger" "Local run state under .greenhouse/: append-only ledger.jsonl of stage runs, open runs, usage-limit park." {
         properties { paths "internal/ledger/**" }
       }
+      report = component "report" "Pure ledger rollup: quota per merged PR, cycle time, parks, retries, rejects, and the scoped-memory join and comparison. No I/O." {
+        properties { paths "internal/report/**" }
+      }
+      memory = component "memory" "Reads nugit's usage log (.nugit/.cache/usage.jsonl) and a stage branch's first commit via git." {
+        properties { paths "internal/memory/**" }
+      }
       prompts = component "prompts" "Versioned stage prompt templates." {
         properties { paths "prompts/**" }
       }
@@ -44,6 +50,10 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       cli -> launch "starts stage sessions"
       cli -> verify "runs checks"
       cli -> ledger "records runs"
+      cli -> report "greenhouse report"
+      cli -> memory "reads the nugit usage log and first commits"
+      report -> ledger "rolls up records"
+      report -> stage "reads outcomes as event kinds"
       config -> stage "names LLM stages"
       launch -> prompts "renders"
       launch -> config "reads stage model/effort/turn budget"

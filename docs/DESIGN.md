@@ -111,8 +111,19 @@ polls session state itself and needs no notify-daemon.
 One JSONL line per stage run in `.greenhouse/ledger.jsonl` (gitignored), with
 bead, stage, session id, start/end, quota before/after, retries and outcome.
 `greenhouse report` rolls it up: quota used per merged PR, cycle time, park
-rate, and rejection reasons. This is how we judge whether the factory is
-working, rather than going by impressions.
+rate, retries, and rejection reasons. This is how we judge whether the factory
+is working, rather than going by impressions.
+
+The report also asks whether scoped memory earns its keep. It joins each LLM
+stage run to nugit's local usage log (`.nugit/.cache/usage.jsonl`), by the
+agent-deck session id when the log carries it and otherwise by the run's
+branch and time window. For each run it reports context calls, the calls made
+before the run's first commit, empty bundles, and unresolved paths. It then
+splits beads into those that loaded context and those that did not, and
+compares their verify retries, park rate, merges and rejections, and review
+rounds. Below a minimum sample (`-min-sample`, default 5 beads per group) it
+prints only the counts and says there are too few runs to compare. It draws
+no conclusion from a handful of runs.
 
 ## Where it runs
 
