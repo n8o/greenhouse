@@ -1,5 +1,5 @@
 // Package launch starts stage sessions through agent-deck and reads their
-// results (ADR-0003). It renders prompts/<stage>.md, launches the session
+// results (ADR-0003). It renders the <stage>.md prompt, launches the session
 // with the stage's pinned model and effort, confirms the prompt actually
 // reached Claude, and parses the session's final message into a stage.Event.
 // Every agent-deck call goes through the Deck adapter.
@@ -12,13 +12,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/n8o/greenhouse/internal/config"
 	"github.com/n8o/greenhouse/internal/stage"
+	"github.com/n8o/greenhouse/prompts"
 )
 
 // Group is the agent-deck group every stage session is created in.
@@ -35,10 +36,10 @@ var ErrBlocked = errors.New("session blocked on an interactive prompt")
 
 // Launcher starts stage sessions for one repo.
 type Launcher struct {
-	Deck      Deck
-	Repo      string
-	PromptDir string                  // default <Repo>/prompts
-	Stages    map[string]config.Stage // model, effort and turn budget per stage
+	Deck    Deck
+	Repo    string
+	Prompts fs.FS                   // stage templates; see PromptsFor
+	Stages  map[string]config.Stage // model, effort and turn budget per stage
 	// Parent is the agent-deck session stage sessions report to; "" starts
 	// them without one.
 	Parent string
@@ -55,11 +56,20 @@ func New(cfg config.Config, deck Deck) *Launcher {
 	return &Launcher{
 		Deck:          deck,
 		Repo:          cfg.Repo,
-		PromptDir:     filepath.Join(cfg.Repo, "prompts"),
+		Prompts:       PromptsFor(cfg),
 		Stages:        cfg.Stages,
 		PollInterval:  3 * time.Second,
 		DeliveryPolls: 40,
 	}
+}
+
+// PromptsFor is the stage templates cfg runs with: the directory its
+// `prompts` key names, or else the ones built into greenhouse.
+func PromptsFor(cfg config.Config) fs.FS {
+	if cfg.Prompts != "" {
+		return os.DirFS(cfg.Prompts)
+	}
+	return prompts.FS
 }
 
 // Run is a launched stage session.
@@ -108,7 +118,7 @@ func (l *Launcher) Launch(ctx context.Context, req Request) (Run, error) {
 	if req.Branch == "" {
 		req.Branch = DefaultBranch(req.Bead, req.Stage)
 	}
-	prompt, err := Render(l.PromptDir, req, budget.MaxTurns)
+	prompt, err := Render(l.Prompts, req, budget.MaxTurns)
 	if err != nil {
 		return Run{}, err
 	}
@@ -226,7 +236,7 @@ func (l *Launcher) Find(ctx context.Context, bead string, st stage.Stage) (Exist
 }
 
 // Resume continues ex for req: it starts ex again if it is stopped, sends
-// it prompts/retry.md, and confirms delivery the way Launch does. A session
+// it retry.md, and confirms delivery the way Launch does. A session
 // already working was resumed before (by a tick that crashed before
 // recording it, or by a human) and is adopted without a send.
 func (l *Launcher) Resume(ctx context.Context, req Request, ex Existing) (Run, error) {
@@ -243,7 +253,7 @@ func (l *Launcher) Resume(ctx context.Context, req Request, ex Existing) (Run, e
 		run.Adopted = true
 		return run, nil
 	}
-	prompt, err := RenderRetry(l.PromptDir, req, budget.MaxTurns)
+	prompt, err := RenderRetry(l.Prompts, req, budget.MaxTurns)
 	if err != nil {
 		return Run{}, err
 	}

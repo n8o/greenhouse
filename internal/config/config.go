@@ -31,12 +31,20 @@ type Config struct {
 	Repo string `toml:"repo"`
 	// PlanPrefix selects the plan's beads: every bead whose ID is
 	// "<PlanPrefix>-<n>".
-	PlanPrefix string           `toml:"plan_prefix"`
-	WIP        WIP              `toml:"wip"`
-	Quota      Quota            `toml:"quota"`
-	Verify     Verify           `toml:"verify"`
-	Stages     map[string]Stage `toml:"stages"`
-	Run        Run              `toml:"run"`
+	PlanPrefix string `toml:"plan_prefix"`
+	// Base is the branch PRs merge into, on origin: a bead is done once its
+	// close is there, and verify rebases each PR onto it. "" means the
+	// remote's default branch (origin/HEAD).
+	Base string `toml:"base"`
+	// Prompts is a directory of stage templates that replaces the ones
+	// built into greenhouse; "" uses the built-in ones. A relative path is
+	// resolved like Repo.
+	Prompts string           `toml:"prompts"`
+	WIP     WIP              `toml:"wip"`
+	Quota   Quota            `toml:"quota"`
+	Verify  Verify           `toml:"verify"`
+	Stages  map[string]Stage `toml:"stages"`
+	Run     Run              `toml:"run"`
 }
 
 // Run configures the scheduler loop (`greenhouse tick` / `run`).
@@ -161,6 +169,14 @@ func Read(path string) (Config, error) {
 	if abs, err := filepath.Abs(cfg.Repo); err == nil {
 		cfg.Repo = abs
 	}
+	if cfg.Prompts != "" {
+		if !filepath.IsAbs(cfg.Prompts) {
+			cfg.Prompts = filepath.Join(filepath.Dir(path), cfg.Prompts)
+		}
+		if abs, err := filepath.Abs(cfg.Prompts); err == nil {
+			cfg.Prompts = abs
+		}
+	}
 	return cfg, nil
 }
 
@@ -172,6 +188,9 @@ func (c Config) Validate() error {
 	}
 	if c.PlanPrefix == "" {
 		errs = append(errs, errors.New("plan_prefix is required"))
+	}
+	if strings.HasPrefix(c.Base, "origin/") || strings.ContainsAny(c.Base, " \t") {
+		errs = append(errs, fmt.Errorf("base is a branch name like \"main\", not a ref; got %q", c.Base))
 	}
 	if c.WIP.Implement < 1 {
 		errs = append(errs, fmt.Errorf("wip.implement must be >= 1, got %d", c.WIP.Implement))

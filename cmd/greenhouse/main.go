@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -28,12 +29,16 @@ import (
 const usage = `usage: greenhouse <command> [flags]
 
 commands:
+  init     write a starter greenhouse.toml for a repo (-repo, -plan, -base)
   status   print every bead in the plan with its stage
   doctor   check this host can run greenhouse unattended (read-only)
   tick     run one scheduler pass (-dry-run prints the decisions only)
   run      run ticks every run.interval, holding .greenhouse/run.lock
   report   roll up the ledger: quota per PR, cycle time, parks, retries,
            rejects, and whether scoped memory is used and helps (--json)
+  version  print the greenhouse version
+
+Every command but init and version reads -config (default greenhouse.toml).
 `
 
 // newSource builds the plan adapter; tests replace it with a plan.Fake.
@@ -75,6 +80,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) i
 		return 2
 	}
 	switch args[0] {
+	case "init":
+		git := d.git
+		if git == nil {
+			git = verify.Exec{}
+		}
+		return runInit(ctx, args[1:], stdout, stderr, git)
+	case "version":
+		fmt.Fprintln(stdout, version())
+		return 0
 	case "status":
 		return status(ctx, args[1:], stdout, stderr, d.source)
 	case "doctor":
@@ -177,11 +191,14 @@ func schedule(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	if err != nil {
 		return fail(err)
 	}
-	s, err := newScheduler(cfg, tools(cfg), stdout, *dry)
+	s, err := newScheduler(ctx, cfg, tools(cfg), stdout, *dry)
 	if err != nil {
 		return fail(err)
 	}
 	if !*dry {
+		if err := excludeState(ctx, s.runner, cfg.Repo); err != nil {
+			return fail(err)
+		}
 		unlock, err := lock(filepath.Join(s.store.Dir, "run.lock"))
 		if err != nil {
 			return fail(err)
@@ -213,8 +230,8 @@ func schedule(ctx context.Context, cmd string, args []string, stdout, stderr io.
 
 // newScheduler wires a scheduler for cfg. Stage sessions are launched under,
 // and polled through, run.parent or else the agent-deck session greenhouse
-// runs in.
-func newScheduler(cfg config.Config, a adapters, out io.Writer, dry bool) (*scheduler, error) {
+// runs in. PRs merge into base, or else origin's default branch.
+func newScheduler(ctx context.Context, cfg config.Config, a adapters, out io.Writer, dry bool) (*scheduler, error) {
 	parent := cfg.Run.Parent
 	if parent == "" {
 		parent = os.Getenv("AGENTDECK_INSTANCE_ID")
@@ -222,8 +239,29 @@ func newScheduler(cfg config.Config, a adapters, out io.Writer, dry bool) (*sche
 	if parent == "" {
 		return nil, errors.New("no parent session: set run.parent in greenhouse.toml or run inside agent-deck")
 	}
+	base, err := baseBranch(ctx, a.runner, cfg)
+	if err != nil {
+		return nil, err
+	}
 	l := launch.New(cfg, a.deck)
 	l.Parent = parent
 	return &scheduler{adapters: a, cfg: cfg, launcher: l, store: ledger.Open(cfg.Repo),
-		local: time.Local, out: out, dry: dry}, nil
+		local: time.Local, out: out, dry: dry, base: "origin/" + base}, nil
+}
+
+// baseBranch is cfg.Base, or else the branch origin/HEAD points at: the
+// default branch git clone records. A repo without one must name it, since
+// guessing "main" would read the wrong plan and rebase onto the wrong ref.
+func baseBranch(ctx context.Context, r verify.Runner, cfg config.Config) (string, error) {
+	if cfg.Base != "" {
+		return cfg.Base, nil
+	}
+	out, err := r.Run(ctx, cfg.Repo, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	ref := strings.TrimSpace(string(out))
+	branch, ok := strings.CutPrefix(ref, "origin/")
+	if err != nil || !ok || branch == "" {
+		return "", fmt.Errorf("cannot tell which branch PRs merge into: origin/HEAD is not set in %s; "+
+			"set base in greenhouse.toml, or run `git remote set-head origin --auto`", cfg.Repo)
+	}
+	return branch, nil
 }

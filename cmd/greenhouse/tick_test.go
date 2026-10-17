@@ -138,7 +138,6 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, _ := filepath.Abs(filepath.Join("..", "..", "prompts"))
 	cfg.Repo = t.TempDir()
 	cfg.Run.Parent = parent
 	w := &world{t: t,
@@ -163,12 +162,11 @@ func newWorld(t *testing.T) *world {
 		}},
 		clock: time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC),
 	}
-	w.s, err = newScheduler(cfg, adapters{plan: w.plan, deck: w.deck, gh: w.gh, probe: w.probe,
+	w.s, err = newScheduler(context.Background(), cfg, adapters{plan: w.plan, deck: w.deck, gh: w.gh, probe: w.probe,
 		runner: w.runner, now: func() time.Time { return w.clock }}, &w.out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.s.launcher.PromptDir = prompts
 	w.s.launcher.PollInterval = time.Millisecond
 	w.s.launcher.DeliveryPolls = 3
 	w.s.local = time.UTC

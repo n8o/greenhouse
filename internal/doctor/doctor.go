@@ -22,6 +22,7 @@ import (
 	"github.com/n8o/greenhouse/internal/config"
 	"github.com/n8o/greenhouse/internal/gate"
 	"github.com/n8o/greenhouse/internal/launch"
+	"github.com/n8o/greenhouse/internal/stage"
 )
 
 // IngestCommand is the statusLine command that feeds the quota gate
@@ -111,8 +112,81 @@ func Run(ctx context.Context, env Env, configPath string) []Result {
 	} else {
 		rs = append(rs, Result{Name: "config", OK: true, Detail: configPath + " is valid"})
 	}
+	rs = append(rs, Base(ctx, env, cfg))
 	rs = append(rs, MCP(cfg.Repo, launch.CheckMCPApproved(cfg.Repo)))
+	rs = append(rs, Prompts(cfg), ExportScript(env, cfg.Repo))
 	return append(rs, Models(cfg))
+}
+
+// Base checks that the branch PRs merge into exists on origin: base, or
+// else origin's default branch. The scheduler reads what is done from it
+// and rebases every PR onto it.
+func Base(ctx context.Context, env Env, cfg config.Config) Result {
+	r := Result{Name: "base"}
+	if cfg.Base != "" {
+		ref := "origin/" + cfg.Base
+		if _, _, err := env.Run(ctx, "git", "-C", cfg.Repo, "rev-parse", "--verify", "--quiet", "refs/remotes/"+ref); err != nil {
+			r.Detail = ref + " does not exist in " + cfg.Repo
+			r.Fix = "set base in the config to the branch PRs merge into, or run `git fetch origin`"
+			return r
+		}
+		r.OK, r.Detail = true, "PRs merge into "+ref
+		return r
+	}
+	out, _, err := env.Run(ctx, "git", "-C", cfg.Repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	ref := strings.TrimSpace(string(out))
+	if err != nil || !strings.HasPrefix(ref, "origin/") || ref == "origin/" {
+		r.Detail = "base is unset and origin/HEAD is not set in " + cfg.Repo
+		r.Fix = "set base in the config, or run `git -C " + cfg.Repo + " remote set-head origin --auto`"
+		return r
+	}
+	r.OK, r.Detail = true, "PRs merge into "+ref+" (origin's default branch)"
+	return r
+}
+
+// Prompts checks that every stage template renders: the built-in ones, or
+// the directory the config's prompts key names.
+func Prompts(cfg config.Config) Result {
+	r := Result{Name: "prompts"}
+	fsys := launch.PromptsFor(cfg)
+	var bad []string
+	for _, st := range config.LLMStages {
+		req := launch.Request{Bead: "x-1", Title: "t", DoneWhen: "d", Stage: st, Reason: "r", PR: 1}
+		if _, err := launch.Render(fsys, req, 1); err != nil {
+			bad = append(bad, err.Error())
+		}
+		if _, err := launch.RenderRetry(fsys, req, 1); err != nil && st == stage.Implement {
+			bad = append(bad, err.Error())
+		}
+	}
+	where := "the built-in stage prompts"
+	if cfg.Prompts != "" {
+		where = cfg.Prompts
+	}
+	if len(bad) > 0 {
+		r.Detail = where + ": " + strings.Join(bad, "; ")
+		r.Fix = "fix the templates, or remove the prompts key to use the built-in ones"
+		return r
+	}
+	r.OK, r.Detail = true, where+" render"
+	return r
+}
+
+// ExportScriptPath is where the implement prompt runs the repo's beads
+// export to close its bead in the plan.
+const ExportScriptPath = "scripts/beads-export.sh"
+
+// ExportScript warns when repo has no beads export script: an implement
+// session then has no export to close its bead with, and the PR leaves the
+// plan as it was.
+func ExportScript(env Env, repo string) Result {
+	path := filepath.Join(repo, ExportScriptPath)
+	if _, err := env.ReadFile(path); err != nil {
+		return Result{Name: "export", Warn: true,
+			Detail: "no " + ExportScriptPath + " in " + repo + ": implement sessions cannot close their bead in the plan",
+			Fix:    "add a beads export script (greenhouse's own scripts/beads-export.sh is one), or tell sessions how to export in the repo's agent instructions"}
+	}
+	return Result{Name: "export", OK: true, Detail: ExportScriptPath + " closes beads in the plan"}
 }
 
 // Failed reports whether any check failed. Warnings do not count.

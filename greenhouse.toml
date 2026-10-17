@@ -5,6 +5,8 @@
 repo = "."
 # Beads whose ID is "<plan_prefix>-<n>" make up the plan.
 plan_prefix = "gr-boot"
+# Branch PRs merge into, on origin; unset means origin's default branch.
+base = "main"
 
 [wip]
 implement = 1 # concurrent implement sessions

@@ -21,9 +21,6 @@ import (
 	"github.com/n8o/greenhouse/internal/verify"
 )
 
-// VerifyBase is the ref a PR is rebased onto and verified against.
-const VerifyBase = "origin/main"
-
 // adapters are every external effect a tick has: bd, agent-deck, gh, the
 // usage and count probes, and the program runner verify and git use.
 type adapters struct {
@@ -61,14 +58,15 @@ type scheduler struct {
 	store    *ledger.Store
 	local    *time.Location // zone of usage-limit reset times
 	out      io.Writer
-	dry      bool // print every decision, carry out none
+	dry      bool   // print every decision, carry out none
+	base     string // origin/<cfg.Base>: the ref a PR merges into, is rebased onto and verified against
 }
 
 // tick is what one Tick knows. In a dry run nothing is written, so tick
 // also overlays the open runs the run would have written.
 type tick struct {
 	beads    []plan.Bead
-	landed   plan.Landed // beads closed on VerifyBase: what "done" means (ADR-0010)
+	landed   plan.Landed // beads closed on the base: what "done" means (ADR-0010)
 	recs     []ledger.Record
 	kids     []launch.Child
 	in       gate.Inputs
@@ -86,7 +84,7 @@ func (s *scheduler) Tick(ctx context.Context) error {
 	}
 	landed, err := s.readLanded(ctx)
 	if err != nil {
-		return fmt.Errorf("read the plan on %s: %w", VerifyBase, err)
+		return fmt.Errorf("read the plan on %s: %w", s.base, err)
 	}
 	recs, err := s.store.Records()
 	if err != nil {
@@ -129,7 +127,7 @@ func (s *scheduler) Tick(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// readLanded reads which beads are closed in the plan export at VerifyBase
+// readLanded reads which beads are closed in the plan export at the base
 // (ADR-0010). It fetches origin first; a failed fetch is reported and the
 // ref is read as last fetched, so an offline tick sees fewer beads done,
 // never more. A plan it cannot read fails the tick: read as "nothing is
@@ -138,9 +136,9 @@ func (s *scheduler) readLanded(ctx context.Context) (plan.Landed, error) {
 	git := func(args ...string) ([]byte, error) { return s.runner.Run(ctx, s.cfg.Repo, "git", args...) }
 	if out, err := git("fetch", "--quiet", "origin"); err != nil {
 		fmt.Fprintf(s.out, "git fetch origin failed (%v: %s); reading %s as last fetched\n",
-			err, strings.TrimSpace(string(out)), VerifyBase)
+			err, strings.TrimSpace(string(out)), s.base)
 	}
-	out, err := git("ls-tree", "--name-only", VerifyBase, "--", plan.ExportDir)
+	out, err := git("ls-tree", "--name-only", s.base, "--", plan.ExportDir)
 	if err != nil {
 		return nil, fmt.Errorf("git ls-tree: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -150,9 +148,9 @@ func (s *scheduler) readLanded(ctx context.Context) (plan.Landed, error) {
 		if !strings.HasSuffix(path, ".jsonl") {
 			continue
 		}
-		data, err := git("show", VerifyBase+":"+path)
+		data, err := git("show", s.base+":"+path)
 		if err != nil {
-			return nil, fmt.Errorf("git show %s:%s: %w: %s", VerifyBase, path, err, strings.TrimSpace(string(data)))
+			return nil, fmt.Errorf("git show %s:%s: %w: %s", s.base, path, err, strings.TrimSpace(string(data)))
 		}
 		files = append(files, data)
 	}
@@ -341,7 +339,7 @@ func (s *scheduler) checkLearn(ctx context.Context, bead string) (int, error, er
 		f := learncheck.File{Path: path}
 		// A lesson is added if the base lacks it and the head has it.
 		if strings.HasPrefix(path, learncheck.LessonsDir) {
-			if _, err := git("cat-file", "-e", VerifyBase+":"+path); err != nil {
+			if _, err := git("cat-file", "-e", s.base+":"+path); err != nil {
 				if out, err := git("show", "origin/"+branch+":"+path); err == nil {
 					f.Added, f.Content = true, string(out)
 				}
@@ -460,7 +458,7 @@ func (s *scheduler) step(ctx context.Context, t *tick, b *plan.Bead) (bool, erro
 		return s.review(ctx, t, b)
 	}
 	if st == stage.Done && !t.landed.Done(b.ID) {
-		s.say(b.ID, "[done] merged, but its close is not on %s yet; its dependents wait", VerifyBase)
+		s.say(b.ID, "[done] merged, but its close is not on %s yet; its dependents wait", s.base)
 	}
 	return false, nil
 }
@@ -509,7 +507,7 @@ func released(st stage.Stage, stillParked bool, last, lastRun *ledger.Record) bo
 // last (ADR-0007).
 func (s *scheduler) unpark(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, lastRun ledger.Record) (bool, error) {
 	if b.Status == "closed" {
-		s.say(b.ID, "closed in the local bd database, but its close is not on %s: not done; it resumes as an in-flight bead", VerifyBase)
+		s.say(b.ID, "closed in the local bd database, but its close is not on %s: not done; it resumes as an in-flight bead", s.base)
 	}
 	resume := st
 	why := "a human set stage:" + string(st)
@@ -539,11 +537,11 @@ func (s *scheduler) unpark(ctx context.Context, t *tick, b *plan.Bead, st stage.
 }
 
 // unlanded handles a bead closed in the local bd database, with no stage
-// label and no run in the ledger, whose close is not on VerifyBase. It is
+// label and no run in the ledger, whose close is not on the base. It is
 // neither done nor in flight, so an approved bead is parked with the reason
 // rather than guessed at; any other bead is only reported.
 func (s *scheduler) unlanded(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
-	msg := fmt.Sprintf("closed in the local bd database, but its close is not on %s and greenhouse has no run of it", VerifyBase)
+	msg := fmt.Sprintf("closed in the local bd database, but its close is not on %s and greenhouse has no run of it", s.base)
 	if !b.Approved() {
 		s.say(b.ID, "%s: not done; its dependents wait for its PR to merge", msg)
 		return false, nil
@@ -674,7 +672,7 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 		return false, nil
 	}
 	if !plan.Ready(*b, t.landed) {
-		s.say(b.ID, "approved, not ready: %s", blockers(*b, t))
+		s.say(b.ID, "approved, not ready: %s", s.blockers(*b, t))
 		return false, nil
 	}
 	next, _ := stage.Start()
@@ -690,7 +688,7 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 }
 
 // blockers describes why b is not ready.
-func blockers(b plan.Bead, t *tick) string {
+func (s *scheduler) blockers(b plan.Bead, t *tick) string {
 	if b.Status != "open" {
 		return "status " + b.Status
 	}
@@ -700,7 +698,7 @@ func blockers(b plan.Bead, t *tick) string {
 			continue
 		}
 		if x := findBead(t.beads, id); x != nil && x.Status == "closed" {
-			id += " (closed locally, not on " + VerifyBase + ")"
+			id += " (closed locally, not on " + s.base + ")"
 		}
 		open = append(open, id)
 	}
@@ -713,7 +711,7 @@ func (s *scheduler) whyNoStart(t *tick) string {
 			return "gates hold " + b.ID
 		}
 	}
-	return "no open " + plan.ApprovedLabel + " bead without a stage has all its blockers closed on " + VerifyBase
+	return "no open " + plan.ApprovedLabel + " bead without a stage has all its blockers closed on " + s.base
 }
 
 func (s *scheduler) newRun(t *tick, bead string, st stage.Stage) ledger.Run {
@@ -971,7 +969,7 @@ func (s *scheduler) branchExists(ctx context.Context, branch string) bool {
 }
 
 // verify runs the deterministic checks on bead's PR, rebased onto
-// VerifyBase in a scheduler-owned worktree, and records the verdict.
+// the base in a scheduler-owned worktree, and records the verdict.
 func (s *scheduler) verify(ctx context.Context, t *tick, b *plan.Bead) (bool, error) {
 	n := ledger.LastPR(t.recs, b.ID)
 	if n == 0 {
@@ -989,11 +987,11 @@ func (s *scheduler) verify(ctx context.Context, t *tick, b *plan.Bead) (bool, er
 	retries := ledger.Retries(t.recs, b.ID)
 	if s.dry {
 		s.say(b.ID, "[verify] would verify PR #%d (%s rebased onto %s), %d/%d retries used",
-			n, pr.HeadRef, VerifyBase, retries, stage.MaxVerifyRetries)
+			n, pr.HeadRef, s.base, retries, stage.MaxVerifyRetries)
 		return true, nil
 	}
 	start := s.now()
-	s.say(b.ID, "[verify] PR #%d (%s rebased onto %s)", n, pr.HeadRef, VerifyBase)
+	s.say(b.ID, "[verify] PR #%d (%s rebased onto %s)", n, pr.HeadRef, s.base)
 	res, err := s.runVerify(ctx, b.ID, pr.HeadRef)
 	if err != nil {
 		return false, err
@@ -1006,7 +1004,7 @@ func (s *scheduler) verify(ctx context.Context, t *tick, b *plan.Bead) (bool, er
 }
 
 // runVerify checks out head in .greenhouse/verify/<bead>, rebases it onto
-// VerifyBase and runs verify there. A rebase conflict is a verify failure:
+// the base and runs verify there. A rebase conflict is a verify failure:
 // the PR cannot merge as it is.
 func (s *scheduler) runVerify(ctx context.Context, bead, head string) (verify.Result, error) {
 	dir := filepath.Join(s.store.Dir, "verify", bead)
@@ -1022,13 +1020,13 @@ func (s *scheduler) runVerify(ctx context.Context, bead, head string) (verify.Re
 		return verify.Result{}, fmt.Errorf("git checkout: %w: %s", err, out)
 	}
 	if out, err := git(dir, "-c", "user.name=greenhouse", "-c", "user.email=greenhouse@invalid",
-		"rebase", VerifyBase); err != nil {
+		"rebase", s.base); err != nil {
 		git(dir, "rebase", "--abort")
 		log := fmt.Sprintf("rebase onto %s failed: %v\n%s\nRebase the branch onto %s, resolve the conflicts and push.\n",
-			VerifyBase, err, strings.TrimSpace(string(out)), VerifyBase)
-		return verify.Result{Checks: []verify.Check{{Name: "rebase " + VerifyBase, Detail: err.Error()}}, Log: log}, nil
+			s.base, err, strings.TrimSpace(string(out)), s.base)
+		return verify.Result{Checks: []verify.Check{{Name: "rebase " + s.base, Detail: err.Error()}}, Log: log}, nil
 	}
-	return verify.Run(ctx, s.runner, verify.Options{Dir: dir, Base: VerifyBase, Bead: bead,
+	return verify.Run(ctx, s.runner, verify.Options{Dir: dir, Base: s.base, Bead: bead,
 		Commands: s.cfg.Verify.Commands, Timeout: s.cfg.Verify.CommandTimeout()})
 }
 
