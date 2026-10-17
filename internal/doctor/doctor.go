@@ -272,15 +272,18 @@ func toolCheck(ctx context.Context, env Env, tool string) Result {
 	}
 	switch tool {
 	case "nugit":
-		// nugit prints `unknown command "plan"` when it predates plan.
-		stdout, stderr, _ := env.Run(ctx, "nugit", "plan")
+		// scripts/beads-export.sh needs `plan normalize -merge-base`: without
+		// it an export from a bd database behind main reverts main (nugit
+		// ADR-0047). An older nugit prints `unknown command "plan"`, or a
+		// normalize usage with no -merge-base.
+		stdout, stderr, _ := env.Run(ctx, "nugit", "plan", "normalize", "-h")
 		out := append(stdout, stderr...)
-		if bytes.Contains(out, []byte(`unknown command "plan"`)) || !bytes.Contains(out, []byte("nugit plan")) {
-			r.Detail = path + " has no `plan` subcommand"
-			r.Fix = "upgrade nugit to a version with `nugit plan check|normalize`"
+		if bytes.Contains(out, []byte(`unknown command "plan"`)) || !bytes.Contains(out, []byte("-merge-base")) {
+			r.Detail = path + " cannot merge an export with main (no `plan normalize -merge-base`)"
+			r.Fix = "upgrade nugit to v0.3.1-0.20261017121324-9504b2946efe or later"
 			return r
 		}
-		r.Detail = path + " (has `plan`)"
+		r.Detail = path + " (has `plan normalize -merge-base`)"
 	case "gh":
 		if _, _, err := env.Run(ctx, "gh", "auth", "status"); err != nil {
 			r.Detail = path + " is not authenticated"

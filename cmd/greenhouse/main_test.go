@@ -87,8 +87,8 @@ func host(settings string) doctor.Env {
 			switch name + " " + strings.Join(args, " ") {
 			case "agent-deck inbox writer-status --json":
 				return []byte(`{"running":true}`), nil, nil
-			case "nugit plan":
-				return nil, []byte("usage: nugit plan <check|normalize>"), errors.New("exit status 2")
+			case "nugit plan normalize -h":
+				return nil, []byte("Usage of plan normalize:\n  -merge-base string\n"), nil
 			}
 			return nil, nil, nil
 		},
