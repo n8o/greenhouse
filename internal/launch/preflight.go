@@ -15,12 +15,22 @@ import (
 // enabledMcpjsonServers of repo's .claude/settings.json. Claude Code asks
 // before it starts an unapproved project MCP server, and an unattended stage
 // session would stall on that prompt. A repo without .mcp.json passes.
-// `greenhouse doctor` runs this before the factory launches anything.
 func CheckMCPApproved(repo string) error {
+	return CheckMCPApprovedIn(repo, func(path string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(repo, path))
+	})
+}
+
+// CheckMCPApprovedIn is CheckMCPApproved over read, which returns a file by
+// its repo-relative path, or an error wrapping os.ErrNotExist when there is
+// none. `greenhouse doctor` reads the base branch with it, which is what a
+// stage session's worktree starts from, rather than the checkout's working
+// tree. where names the files' location in errors.
+func CheckMCPApprovedIn(where string, read func(path string) ([]byte, error)) error {
 	var mcp struct {
 		Servers map[string]json.RawMessage `json:"mcpServers"`
 	}
-	switch err := readJSON(filepath.Join(repo, ".mcp.json"), &mcp); {
+	switch err := readJSON(read, ".mcp.json", &mcp); {
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	case err != nil:
@@ -34,8 +44,8 @@ func CheckMCPApproved(repo string) error {
 		Enabled   []string `json:"enabledMcpjsonServers"`
 		EnableAll bool     `json:"enableAllProjectMcpServers"`
 	}
-	settingsPath := filepath.Join(repo, ".claude", "settings.json")
-	if err := readJSON(settingsPath, &settings); err != nil && !errors.Is(err, os.ErrNotExist) {
+	settingsPath := filepath.Join(".claude", "settings.json")
+	if err := readJSON(read, settingsPath, &settings); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if settings.EnableAll {
@@ -49,13 +59,13 @@ func CheckMCPApproved(repo string) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("MCP servers in .mcp.json not pre-approved in %s enabledMcpjsonServers (a stage session would stall on the approval prompt): %s",
-			settingsPath, strings.Join(missing, ", "))
+			filepath.Join(where, settingsPath), strings.Join(missing, ", "))
 	}
 	return nil
 }
 
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
+func readJSON(read func(string) ([]byte, error), path string, v any) error {
+	b, err := read(path)
 	if err != nil {
 		return err
 	}

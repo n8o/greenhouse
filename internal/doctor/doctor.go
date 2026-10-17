@@ -112,35 +112,65 @@ func Run(ctx context.Context, env Env, configPath string) []Result {
 	} else {
 		rs = append(rs, Result{Name: "config", OK: true, Detail: configPath + " is valid"})
 	}
-	rs = append(rs, Base(ctx, env, cfg))
-	rs = append(rs, MCP(cfg.Repo, launch.CheckMCPApproved(cfg.Repo)))
+	base, ref := baseRef(ctx, env, cfg)
+	rs = append(rs, base)
+	rs = append(rs, mcpCheck(ctx, env, cfg.Repo, ref))
 	rs = append(rs, Prompts(cfg), ExportScript(env, cfg.Repo))
 	return append(rs, Models(cfg))
 }
 
 // Base checks that the branch PRs merge into exists on origin: base, or
-// else origin's default branch. The scheduler reads what is done from it
-// and rebases every PR onto it.
+// else origin's default branch. The scheduler reads what is done from it,
+// branches every stage session from it and rebases every PR onto it.
 func Base(ctx context.Context, env Env, cfg config.Config) Result {
+	r, _ := baseRef(ctx, env, cfg)
+	return r
+}
+
+// baseRef is Base plus the ref it found ("" when the check fails).
+func baseRef(ctx context.Context, env Env, cfg config.Config) (Result, string) {
 	r := Result{Name: "base"}
 	if cfg.Base != "" {
 		ref := "origin/" + cfg.Base
 		if _, _, err := env.Run(ctx, "git", "-C", cfg.Repo, "rev-parse", "--verify", "--quiet", "refs/remotes/"+ref); err != nil {
 			r.Detail = ref + " does not exist in " + cfg.Repo
 			r.Fix = "set base in the config to the branch PRs merge into, or run `git fetch origin`"
-			return r
+			return r, ""
 		}
 		r.OK, r.Detail = true, "PRs merge into "+ref
-		return r
+		return r, ref
 	}
 	out, _, err := env.Run(ctx, "git", "-C", cfg.Repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	ref := strings.TrimSpace(string(out))
 	if err != nil || !strings.HasPrefix(ref, "origin/") || ref == "origin/" {
 		r.Detail = "base is unset and origin/HEAD is not set in " + cfg.Repo
 		r.Fix = "set base in the config, or run `git -C " + cfg.Repo + " remote set-head origin --auto`"
-		return r
+		return r, ""
 	}
 	r.OK, r.Detail = true, "PRs merge into "+ref+" (origin's default branch)"
+	return r, ref
+}
+
+// mcpCheck runs the MCP preflight on ref, the base every stage session
+// branches from: the checkout's working tree may be on any branch and
+// approve a different set of servers. Without a ref it reads the working
+// tree.
+func mcpCheck(ctx context.Context, env Env, repo, ref string) Result {
+	if ref == "" {
+		return MCP(repo, launch.CheckMCPApproved(repo))
+	}
+	err := launch.CheckMCPApprovedIn(repo+" at "+ref, func(path string) ([]byte, error) {
+		out, _, err := env.Run(ctx, "git", "-C", repo, "show", ref+":"+path)
+		if err != nil {
+			// Base passed, so ref exists: the path is not on it.
+			return nil, fmt.Errorf("%s:%s: %w", ref, path, os.ErrNotExist)
+		}
+		return out, nil
+	})
+	r := MCP(repo+" at "+ref, err)
+	if !r.OK {
+		r.Fix = "add the servers to enabledMcpjsonServers in .claude/settings.json and merge it to " + ref
+	}
 	return r
 }
 

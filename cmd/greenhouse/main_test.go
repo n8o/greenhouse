@@ -90,6 +90,10 @@ func host(settings string) doctor.Env {
 			case "nugit plan normalize -h":
 				return nil, []byte("Usage of plan normalize:\n  -merge-base string\n"), nil
 			}
+			if len(args) == 4 && args[2] == "show" {
+				// The base has no .mcp.json, so the MCP preflight passes.
+				return nil, []byte("fatal: path does not exist"), errors.New("exit status 128")
+			}
 			return nil, nil, nil
 		},
 		ReadFile: func(string) ([]byte, error) { return []byte(settings), nil },

@@ -788,8 +788,22 @@ func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.
 
 	req.ExistingBranch = s.branchExists(ctx, req.Branch)
 	if s.dry {
-		s.say(b.ID, "  would launch %s on %s (existing branch: %v)", launch.Title(b.ID, st), req.Branch, req.ExistingBranch)
+		from := "existing branch"
+		if !req.ExistingBranch {
+			from = "new branch from " + s.base
+		}
+		s.say(b.ID, "  would launch %s on %s (%s)", launch.Title(b.ID, st), req.Branch, from)
 		return true, nil
+	}
+	if !req.ExistingBranch {
+		// agent-deck branches a new worktree from whatever the checkout has
+		// checked out, which may be a stale or unrelated branch. Branch from
+		// the base this tick fetched instead (ADR-0012).
+		if out, err := s.runner.Run(ctx, s.cfg.Repo, "git", "branch", "--no-track", req.Branch, s.base); err != nil {
+			// The open run stays, so the next tick tries again.
+			return false, fmt.Errorf("create %s from %s: %w: %s", req.Branch, s.base, err, strings.TrimSpace(string(out)))
+		}
+		req.ExistingBranch = true
 	}
 	s.say(b.ID, "  launch %s on %s", launch.Title(b.ID, st), req.Branch)
 	r, err := s.launcher.Launch(ctx, req)

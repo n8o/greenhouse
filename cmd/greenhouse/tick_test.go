@@ -663,3 +663,30 @@ func TestLock(t *testing.T) {
 		unlock2()
 	}
 }
+
+// TestTickNewBranchStartsFromBase: a stage with no branch yet gets one
+// created from origin/<base> before the launch, so the session never starts
+// from whatever the checkout has checked out (ADR-0012).
+func TestTickNewBranchStartsFromBase(t *testing.T) {
+	w := newWorld(t)
+	w.runner.Replies["git rev-parse --verify --quiet refs/heads/feature/p-1-spec"] = verify.Reply{Err: errors.New("exit status 1")}
+	w.tick()
+	w.want(slices.Contains(w.runner.Calls, "git branch --no-track feature/p-1-spec origin/main"),
+		"the branch must be created from origin/main: %v", w.runner.Calls)
+	w.want(len(w.deck.Launched) == 1 && !w.deck.Launched[0].NewBranch && w.deck.Launched[0].Branch == "feature/p-1-spec",
+		"agent-deck must launch on the created branch, not branch again: %+v", w.deck.Launched)
+}
+
+// TestTickBranchCreateFailureRetries: a branch that cannot be created holds
+// the launch, keeps the open run, and does not park the bead.
+func TestTickBranchCreateFailureRetries(t *testing.T) {
+	w := newWorld(t)
+	w.runner.Replies["git rev-parse --verify --quiet refs/heads/feature/p-1-spec"] = verify.Reply{Err: errors.New("exit status 1")}
+	w.runner.Replies["git branch --no-track feature/p-1-spec origin/main"] = verify.Reply{Out: "fatal: not a valid object name", Err: errors.New("exit status 128")}
+	w.out.Reset()
+	err := w.s.Tick(context.Background())
+	w.want(err != nil && strings.Contains(err.Error(), "create feature/p-1-spec from origin/main"), "tick error %v", err)
+	w.want(len(w.deck.Launched) == 0, "nothing may launch without the branch: %+v", w.deck.Launched)
+	run, _ := w.s.store.Run("p-1")
+	w.want(run != nil && len(w.records()) == 0, "the open run stays and nothing is recorded: %+v %v", run, w.records())
+}
