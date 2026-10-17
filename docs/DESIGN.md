@@ -122,9 +122,14 @@ resumed session is told a human released it and why it had parked.
 The scheduler launches each stage roughly like this:
 
 ```
-agent-deck launch <repo> -worktree <branch> -b -c claude -g greenhouse \
+git branch --no-track <branch> origin/<base>      # only if the branch is new
+agent-deck launch <repo> -worktree <branch> -c claude -g greenhouse \
   -assert-done -message-file prompts/<stage>.md(rendered)
 ```
+
+greenhouse creates a new stage branch itself, from the `origin/<base>` the
+tick just fetched. agent-deck would branch from origin's default branch,
+which is not `base` when the config names another (ADR-0012).
 
 The rendered prompt carries the bead id, the stage, the "Done when", the
 turn budget, and the rules: load `nugit context -budget 12000` for touched

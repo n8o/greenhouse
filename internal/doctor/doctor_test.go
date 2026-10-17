@@ -121,8 +121,9 @@ type fakeEnv struct {
 	errOuts  map[string]string // "name args" -> stderr
 	errs     map[string]error
 	settings string
-	noExport bool // the repo has no scripts/beads-export.sh
-	noBase   bool // origin has no base branch
+	noExport bool              // the repo has no scripts/beads-export.sh
+	noBase   bool              // origin has no base branch
+	onBase   map[string]string // "ref:path" -> the file on the base branch
 }
 
 func (f *fakeEnv) env() Env {
@@ -138,6 +139,13 @@ func (f *fakeEnv) env() Env {
 			key := name + " " + strings.Join(args, " ")
 			if f.noBase && slices.Contains(args, "rev-parse") {
 				return nil, nil, errors.New("exit status 1")
+			}
+			if len(args) == 4 && args[0] == "-C" && args[2] == "show" {
+				body, ok := f.onBase[args[3]]
+				if !ok {
+					return nil, []byte("fatal: path does not exist"), errors.New("exit status 128")
+				}
+				return []byte(body), nil, nil
 			}
 			return []byte(f.outs[key]), []byte(f.errOuts[key]), f.errs[key]
 		},
@@ -343,5 +351,34 @@ func TestPrompts(t *testing.T) {
 	os.Remove(filepath.Join(dir, "spec.md"))
 	if r := Prompts(config.Config{Prompts: dir}); r.OK || !strings.Contains(r.Detail, "spec.md") {
 		t.Errorf("a missing template: %+v", r)
+	}
+}
+
+// TestMCPReadsTheBase: the MCP preflight reads the base branch, which every
+// stage session starts from, not the checkout's working tree.
+func TestMCPReadsTheBase(t *testing.T) {
+	ctx := context.Background()
+	mcp := `{"mcpServers":{"nugit":{"command":"nugit"}}}`
+	tests := []struct {
+		name   string
+		onBase map[string]string
+		ok     bool
+	}{
+		{"approved on the base", map[string]string{
+			"origin/master:.mcp.json":             mcp,
+			"origin/master:.claude/settings.json": `{"enabledMcpjsonServers":["nugit"]}`}, true},
+		{"not approved on the base", map[string]string{"origin/master:.mcp.json": mcp}, false},
+		{"no .mcp.json on the base", map[string]string{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := healthy()
+			f.onBase = tt.onBase
+			// The working tree approves nothing; only the base may count.
+			r := mcpCheck(ctx, f.env(), t.TempDir(), "origin/master")
+			if r.OK != tt.ok || !strings.Contains(r.Detail, "at origin/master") {
+				t.Errorf("got %+v, want ok=%v", r, tt.ok)
+			}
+		})
 	}
 }
