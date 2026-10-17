@@ -150,7 +150,7 @@ func healthy() *fakeEnv {
 	return &fakeEnv{
 		missing:  map[string]bool{},
 		outs:     map[string]string{"agent-deck inbox writer-status --json": `{"running":true}`},
-		errOuts:  map[string]string{"nugit plan": "usage: nugit plan <check|normalize> [flags]\n"},
+		errOuts:  map[string]string{"nugit plan normalize -h": "Usage of plan normalize:\n  -merge-base string\n"},
 		errs:     map[string]error{},
 		settings: `{"statusLine":{"type":"command","command":"agent-deck usage ingest claude"}}`,
 	}
@@ -212,7 +212,8 @@ func TestRun(t *testing.T) {
 		}, "opus", []string{"statusline"}},
 		{"daemon down", func(f *fakeEnv) { f.outs["agent-deck inbox writer-status --json"] = `{"running":false}` }, "opus", []string{"notify-daemon"}},
 		{"jq and bd missing", func(f *fakeEnv) { f.missing["jq"], f.missing["bd"] = true, true }, "opus", []string{"bd", "jq"}},
-		{"nugit without plan", func(f *fakeEnv) { f.errOuts["nugit plan"] = `unknown command "plan"` }, "opus", []string{"nugit"}},
+		{"nugit without plan", func(f *fakeEnv) { f.errOuts["nugit plan normalize -h"] = `unknown command "plan"` }, "opus", []string{"nugit"}},
+		{"nugit without -merge-base", func(f *fakeEnv) { f.errOuts["nugit plan normalize -h"] = "Usage of plan normalize:\n  -split\n" }, "opus", []string{"nugit"}},
 		{"gh logged out", func(f *fakeEnv) { f.errs["gh auth status"] = errors.New("exit status 1") }, "opus", []string{"gh"}},
 		{"haiku stage", func(*fakeEnv) {}, "haiku", []string{"config", "models"}},
 	}
