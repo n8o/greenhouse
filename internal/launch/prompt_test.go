@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"github.com/n8o/greenhouse/internal/stage"
+	"github.com/n8o/greenhouse/prompts"
 )
 
-// promptDir is the committed prompts/ directory.
-var promptDir = filepath.Join("..", "..", "prompts")
+// promptDir is the built-in prompts.
+var promptDir = prompts.FS
 
 func req(st stage.Stage) Request {
 	return Request{Bead: "x-1", Title: "Do the thing", DoneWhen: "Done when: it works.",
@@ -84,10 +85,10 @@ func TestRenderRejects(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "contract.md"), []byte(`{{define "contract"}}{{end}}`), 0o644)
 	os.WriteFile(filepath.Join(dir, "spec.md"), []byte("{{.Nope}}"), 0o644)
-	if _, err := Render(dir, req(stage.Spec), 1); err == nil {
+	if _, err := Render(os.DirFS(dir), req(stage.Spec), 1); err == nil {
 		t.Error("a template using an unknown field must fail")
 	}
-	if _, err := Render(t.TempDir(), req(stage.Spec), 1); err == nil {
+	if _, err := Render(os.DirFS(t.TempDir()), req(stage.Spec), 1); err == nil {
 		t.Error("a missing template must fail")
 	}
 }

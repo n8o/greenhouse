@@ -6,8 +6,9 @@
   and report instead of running on.
 - Before a non-trivial edit, load context for the path:
   `nugit context -path <file> -task "<task>" -budget {{.ContextBudget}}`.
-- Read AGENTS.md and the ADRs in `.nugit/decisions/`. Their rejected
-  alternatives are settled; do not re-propose them.
+- Read the repo's agent instructions (AGENTS.md, CLAUDE.md, whichever it
+  has) and the ADRs in `.nugit/decisions/`. Their rejected alternatives are
+  settled; do not re-propose them.
 {{end}}
 
 {{define "contract"}}## Result contract

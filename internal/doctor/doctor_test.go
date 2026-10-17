@@ -121,6 +121,8 @@ type fakeEnv struct {
 	errOuts  map[string]string // "name args" -> stderr
 	errs     map[string]error
 	settings string
+	noExport bool // the repo has no scripts/beads-export.sh
+	noBase   bool // origin has no base branch
 }
 
 func (f *fakeEnv) env() Env {
@@ -134,10 +136,16 @@ func (f *fakeEnv) env() Env {
 		},
 		Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
 			key := name + " " + strings.Join(args, " ")
+			if f.noBase && slices.Contains(args, "rev-parse") {
+				return nil, nil, errors.New("exit status 1")
+			}
 			return []byte(f.outs[key]), []byte(f.errOuts[key]), f.errs[key]
 		},
 		Now: func() time.Time { return time.Unix(1791631700, 0) },
 		ReadFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, "/"+ExportScriptPath) && !f.noExport {
+				return []byte("#!/bin/sh\n"), nil
+			}
 			if path != settingsPath {
 				return nil, fs.ErrNotExist
 			}
@@ -161,6 +169,7 @@ func writeConfig(t *testing.T, implementModel string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "greenhouse.toml")
 	body := `plan_prefix = "gr-boot"
+base = "main"
 [verify]
 commands = ["go test ./..."]
 [stages.spec]
@@ -216,21 +225,23 @@ func TestRun(t *testing.T) {
 		{"nugit without -merge-base", func(f *fakeEnv) { f.errOuts["nugit plan normalize -h"] = "Usage of plan normalize:\n  -split\n" }, "opus", []string{"nugit"}},
 		{"gh logged out", func(f *fakeEnv) { f.errs["gh auth status"] = errors.New("exit status 1") }, "opus", []string{"gh"}},
 		{"haiku stage", func(*fakeEnv) {}, "haiku", []string{"config", "models"}},
+		{"base missing on origin", func(f *fakeEnv) { f.noBase = true }, "opus", []string{"base"}},
+		{"no export script", func(f *fakeEnv) { f.noExport = true }, "opus", []string{"export"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := healthy()
 			tt.edit(f)
 			rs := Run(ctx, f.env(), writeConfig(t, tt.model))
-			want := []string{"statusline", "notify-daemon", "bd", "nugit", "gh", "agent-deck", "jq", "config", "mcp", "models"}
+			want := []string{"statusline", "notify-daemon", "bd", "nugit", "gh", "agent-deck", "jq", "config", "base", "mcp", "prompts", "export", "models"}
 			if got := names(rs, true); len(got)+len(names(rs, false)) != len(want) {
 				t.Fatalf("ran %d checks, want %d: %+v", len(rs), len(want), rs)
 			}
 			if got := names(rs, false); strings.Join(got, ",") != strings.Join(tt.failed, ",") {
 				t.Errorf("failed %v, want %v: %+v", got, tt.failed, rs)
 			}
-			// notify-daemon is a warning (ADR-0006): reported, never a failure.
-			if Failed(rs) != slices.ContainsFunc(tt.failed, func(n string) bool { return n != "notify-daemon" }) {
+			// notify-daemon (ADR-0006) and export are warnings: reported, never a failure.
+			if Failed(rs) != slices.ContainsFunc(tt.failed, func(n string) bool { return n != "notify-daemon" && n != "export" }) {
 				t.Errorf("Failed = %v", Failed(rs))
 			}
 		})
@@ -283,5 +294,54 @@ func TestFreshUsage(t *testing.T) {
 				t.Errorf("FreshUsage = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBase(t *testing.T) {
+	ctx := context.Background()
+	symref := "git -C /r symbolic-ref --short refs/remotes/origin/HEAD"
+	tests := []struct {
+		name   string
+		base   string
+		edit   func(*fakeEnv)
+		ok     bool
+		detail string
+	}{
+		{"set and on origin", "master", func(*fakeEnv) {}, true, "origin/master"},
+		{"set but not on origin", "master", func(f *fakeEnv) { f.noBase = true }, false, "origin/master does not exist"},
+		{"unset, origin default", "", func(f *fakeEnv) { f.outs[symref] = "origin/trunk\n" }, true, "origin/trunk (origin's default branch)"},
+		{"unset, no origin/HEAD", "", func(f *fakeEnv) { f.errs[symref] = errors.New("exit status 128") }, false, "origin/HEAD is not set"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := healthy()
+			tt.edit(f)
+			r := Base(ctx, f.env(), config.Config{Repo: "/r", Base: tt.base})
+			if r.OK != tt.ok || !strings.Contains(r.Detail, tt.detail) || tt.ok != (r.Fix == "") {
+				t.Errorf("got %+v, want ok=%v detail~%q", r, tt.ok, tt.detail)
+			}
+		})
+	}
+}
+
+func TestPrompts(t *testing.T) {
+	if r := Prompts(config.Config{}); !r.OK || !strings.Contains(r.Detail, "built-in") {
+		t.Errorf("built-in prompts: %+v", r)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "contract.md"), []byte(`{{define "rules"}}{{end}}{{define "contract"}}{{end}}`), 0o644)
+	for _, name := range []string{"spec.md", "implement.md", "learn.md", "retry.md"} {
+		os.WriteFile(filepath.Join(dir, name), []byte(`{{.Bead}} {{template "contract" .}}`), 0o644)
+	}
+	if r := Prompts(config.Config{Prompts: dir}); !r.OK {
+		t.Errorf("a complete override: %+v", r)
+	}
+	os.WriteFile(filepath.Join(dir, "learn.md"), []byte(`{{.Nope}}`), 0o644)
+	if r := Prompts(config.Config{Prompts: dir}); r.OK || !strings.Contains(r.Detail, "learn.md") {
+		t.Errorf("a template using an unknown field: %+v", r)
+	}
+	os.Remove(filepath.Join(dir, "spec.md"))
+	if r := Prompts(config.Config{Prompts: dir}); r.OK || !strings.Contains(r.Detail, "spec.md") {
+		t.Errorf("a missing template: %+v", r)
 	}
 }

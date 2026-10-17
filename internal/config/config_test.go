@@ -104,6 +104,7 @@ func TestLoadRejects(t *testing.T) {
 		{"no turns", strings.Replace(minimal, "max_turns = 20", "max_turns = 0", 1), "stages.spec.max_turns must be >= 1"},
 		{"bad stage timeout", strings.Replace(minimal, "max_turns = 20", "max_turns = 20\ntimeout = \"forever\"", 1), `stages.spec.timeout must be a positive duration`},
 		{"bad interval", minimal + "\n[run]\ninterval = \"0s\"\n", `run.interval must be a positive duration`},
+		{"base as a ref", strings.Replace(minimal, `plan_prefix = "gr-boot"`, "plan_prefix = \"gr-boot\"\nbase = \"origin/main\"", 1), `base is a branch name like "main", not a ref`},
 		{"bad toml", "plan_prefix = ", "config"},
 	}
 	for _, tt := range tests {
@@ -113,6 +114,24 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("Load error = %v, want it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestLoadResolvesPrompts: a relative prompts directory is resolved against
+// the config's directory, like repo; unset stays unset (the built-in ones).
+func TestLoadResolvesPrompts(t *testing.T) {
+	path := write(t, strings.Replace(minimal, `plan_prefix = "gr-boot"`, "plan_prefix = \"gr-boot\"\nbase = \"master\"\nprompts = \"my-prompts\"", 1))
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := filepath.Abs(filepath.Dir(path))
+	if want := filepath.Join(dir, "my-prompts"); cfg.Prompts != want || cfg.Base != "master" {
+		t.Errorf("prompts %q base %q, want %q master", cfg.Prompts, cfg.Base, want)
+	}
+	cfg, err = Load(write(t, minimal))
+	if err != nil || cfg.Prompts != "" || cfg.Base != "" {
+		t.Errorf("unset prompts %q base %q (%v), want both empty", cfg.Prompts, cfg.Base, err)
 	}
 }
 

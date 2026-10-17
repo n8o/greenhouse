@@ -43,7 +43,7 @@ marked ready for review only after it is validated. A human merges. The first pr
           │
  ┌──────── greenhouse tick (no LLM) ────────────────────────────────┐
  │ gates: quota headroom · WIP < cap · open agent PRs < cap       │
- │ pick next READY approved bead (blockers closed on origin/main) │
+ │ pick next READY approved bead (blockers closed on the base)    │
  │ launch stage session ─────────────▶ agent-deck launch         │
  │ ◀─ completion (sentinel → inbox) ──┘  (worktree, claude, nugit)│
  │ advance label · retry once · or park (stage:parked + reason)   │
@@ -68,11 +68,12 @@ the human ratifies the lesson by merging it and running `nugit ratify`.
 
 The bead label records the stage (`stage:spec|implement|verify|review|parked`).
 The scheduler's only memory is the labels, `agent-deck session children --json`,
-`gh pr list`, the ledger, and the plan on `origin/main`.
+`gh pr list`, the ledger, and the plan on the base branch (`origin/<base>`).
 
-**Done means closed on main** (ADR-0010). A bead is done, and unblocks its
+**Done means closed on the base** (ADR-0010). A bead is done, and unblocks its
 dependents, only when its line is `closed` in `.beads/plans/*.jsonl` at
-`origin/main`, which each tick fetches and reads. A step's PR closes its own
+`origin/<base>` (`base` in the config, else origin's default branch;
+ADR-0011), which each tick fetches and reads. A step's PR closes its own
 bead (ADR-0005), and in the shared local bd database that close shows up
 long before the merge, so a local `closed` never makes a bead done. A bead
 closed locally whose close is not on main is reported on every tick. With
@@ -129,7 +130,9 @@ The rendered prompt carries the bead id, the stage, the "Done when", the
 turn budget, and the rules: load `nugit context -budget 12000` for touched
 paths first; commit with trailers; open the PR as a **draft**, stamped with the
 session; end with the `===AGENTDECK_DONE===` sentinel. Prompts are versioned
-files in `prompts/`, so a change to how the factory works is a reviewed diff.
+files in `prompts/`, built into the binary, so a change to how the factory
+works is a reviewed diff. A config's `prompts` key names a directory that
+replaces them for one repo (ADR-0011).
 
 A stage that runs again for the same bead (a verify-fail retry, a relaunch
 after a usage-limit park, a stage resumed by an unpark) **resumes its existing
@@ -176,6 +179,30 @@ It runs on the laptop first (gr-boot-1…gr-boot-6). On the always-on build host
 runs under a dedicated unprivileged user (key-only SSH, not in the docker group)
 in a capped systemd slice, with agent-deck remote-drained to the laptop
 (gr-boot-9). Its first external customer comes next (gr-boot-10).
+
+## Any repo (ADR-0011)
+
+greenhouse is one binary and a config; the repo it works on needs nothing
+of greenhouse's:
+
+```sh
+go install github.com/n8o/greenhouse/cmd/greenhouse@latest
+greenhouse init -repo ~/src/app -plan app-v2 -config ~/greenhouse/app.toml
+greenhouse doctor -config ~/greenhouse/app.toml
+```
+
+- `base` names the branch PRs merge into; unset, it is origin's default
+  branch (`origin/HEAD`). There is no fallback to `main`: a wrong base reads
+  the wrong plan and rebases onto the wrong ref.
+- Stage prompts are embedded. They tell a session to read the repo's own
+  agent instructions (AGENTS.md or CLAUDE.md) for its build and test
+  commands; `verify.commands` are the checks that gate a PR.
+- Run state stays in `<repo>/.greenhouse/`, kept out of `git status` through
+  the clone's own `info/exclude`; greenhouse edits no tracked file of a repo
+  it does not own.
+- The repo needs a Beads plan exported to `.beads/plans/` and an export
+  script at `scripts/beads-export.sh`, which implement sessions run to close
+  their bead. `greenhouse doctor` warns when it is missing.
 
 ## Out of scope (for now)
 

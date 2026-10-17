@@ -16,7 +16,7 @@ func testLauncher(d *FakeDeck) *Launcher {
 		"spec":      {Model: "sonnet", Effort: "low", MaxTurns: 5},
 		"implement": {Model: "opus", Effort: "high", MaxTurns: 80},
 	}}, d)
-	l.PromptDir = promptDir
+	l.Prompts = promptDir
 	l.DeliveryPolls = 3
 	l.sleep = func(time.Duration) {}
 	return l

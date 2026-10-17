@@ -20,7 +20,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       gate = component "gate" "Quota / WIP / open-PR gates: pure decisions over a usage reading, counts and the time, plus read-only agent-deck/gh probes." {
         properties { paths "internal/gate/**" }
       }
-      doctor = component "doctor" "Read-only host checks: statusLine ingest, notify-daemon (a warning), tools, MCP approval, stage models." {
+      doctor = component "doctor" "Read-only host checks: statusLine ingest, notify-daemon (a warning), tools, base branch, MCP approval, prompts, export script (a warning), stage models." {
         properties { paths "internal/doctor/**" }
       }
       launch = component "launch" "Starts stage sessions via agent-deck and collects their completions." {
@@ -41,7 +41,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       memory = component "memory" "Reads nugit's usage log (.nugit/.cache/usage.jsonl) and a stage branch's first commit via git." {
         properties { paths "internal/memory/**" }
       }
-      prompts = component "prompts" "Versioned stage prompt templates." {
+      prompts = component "prompts" "Versioned stage prompt templates, embedded in the binary." {
         properties { paths "prompts/**" }
       }
 
@@ -68,6 +68,7 @@ workspace "greenhouse" "A software factory that fits within one person's Claude 
       doctor -> config "reads stage models"
       doctor -> launch "runs the MCP preflight"
       doctor -> gate "reads the usage reading and its freshness"
+      doctor -> stage "renders each stage's prompt"
       verify -> stage "maps results onto verify events"
     }
 

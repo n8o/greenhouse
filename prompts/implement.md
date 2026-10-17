@@ -24,14 +24,17 @@ same PR number.
 
 ## Steps
 1. Load `nugit context` for every path you touch, then build to the spec.
-2. Run the repo's checks (AGENTS.md "Build / test") until they pass.
+2. Run the build and test commands the repo's agent instructions give until
+   they pass.
 3. Commit in few, meaningful commits. When a change carries a decision, add
    trailers (`symptom:`, `decision:`, `rejected:`, `learned:`, `affects:`,
    `keywords:`), with at most one `decision:` per commit.
-4. Close only your own bead, inside this PR (ADR-0005): if the repo has
-   `.beads/plans/`, run `bd close {{.Bead}} --reason "this PR"` and
-   `scripts/beads-export.sh`, then commit **only the {{.Bead}} line** (closed,
-   with its spec fields `acceptance_criteria`/`design`/`notes`; ADR-0008). Restore
+4. Close only your own bead, inside this PR: run
+   `bd close {{.Bead}} --reason "this PR"` and the repo's beads export
+   (`scripts/beads-export.sh`), then commit **only the {{.Bead}} line** under
+   `.beads/plans/` (closed, with its spec fields
+   `acceptance_criteria`/`design`/`notes`). greenhouse's verify rejects a PR
+   that changes any other bead (greenhouse ADR-0005, ADR-0008). Restore
    every other changed line with `git checkout`. Never commit in-progress
    state or stage labels.
 5. Push and open the PR **as a draft**: `gh pr create --draft`. End its body
