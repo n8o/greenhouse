@@ -25,6 +25,7 @@ func TestRenderCommittedPrompts(t *testing.T) {
 		"-budget 12000",       // nugit context
 		EventPrefix, Sentinel, // result contract
 		`{"kind":"needs-human","question":`,
+		"nugit objective claim x-1", "objective: x-1", // nugit ADR-0049
 	}
 	perStage := map[stage.Stage][]string{
 		stage.Spec: {`{"kind":"spec-done"}`, `"kind":"spec-vague","reason"`, "bd update x-1"},

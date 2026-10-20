@@ -9,6 +9,11 @@
 - Read the repo's agent instructions (AGENTS.md, CLAUDE.md, whichever it
   has) and the ADRs in `.nugit/decisions/`. Their rejected alternatives are
   settled; do not re-propose them.
+- This session's objective is bead {{.Bead}}, and nothing else. First run
+  `nugit objective claim {{.Bead}}`, so the commit-msg hook names it on every
+  commit and the PR view opens with it. If that command fails, end every
+  commit message with the line `objective: {{.Bead}}` yourself. Work you find
+  that belongs to another bead goes in your final report, not in this branch.
 {{end}}
 
 {{define "contract"}}## Result contract
