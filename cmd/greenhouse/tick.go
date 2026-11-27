@@ -675,6 +675,9 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 		s.say(b.ID, "approved, not ready: %s", s.blockers(*b, t))
 		return false, nil
 	}
+	if s.holdForQuestions(b) {
+		return false, nil
+	}
 	next, _ := stage.Start()
 	if !s.gates(t, b.ID, next) {
 		return false, nil
@@ -685,6 +688,23 @@ func (s *scheduler) start(ctx context.Context, t *tick, b *plan.Bead) (bool, err
 		return false, err
 	}
 	return true, s.setStage(ctx, b, next)
+}
+
+// holdForQuestions reports whether b carries open questions, and if so says
+// what they are. Nothing is launched or recorded and no label moves: the
+// human answers by editing the bead, and the next tick goes on from there.
+// Parking would ask the human for a second step, the unpark, after the
+// answer they already wrote.
+func (s *scheduler) holdForQuestions(b *plan.Bead) bool {
+	qs := plan.OpenQuestions(*b)
+	if len(qs) == 0 {
+		return false
+	}
+	s.say(b.ID, "holds: %d open question(s) for a human; write each answer into the bead in place of its [NEEDS CLARIFICATION: …] marker", len(qs))
+	for _, q := range qs {
+		s.say(b.ID, "  ? %s", q)
+	}
+	return true
 }
 
 // blockers describes why b is not ready.
@@ -708,6 +728,9 @@ func (s *scheduler) blockers(b plan.Bead, t *tick) string {
 func (s *scheduler) whyNoStart(t *tick) string {
 	for _, b := range t.beads {
 		if b.Stage() == "" && b.Approved() && plan.Ready(b, t.landed) {
+			if len(plan.OpenQuestions(b)) > 0 {
+				continue
+			}
 			return "gates hold " + b.ID
 		}
 	}
@@ -733,6 +756,9 @@ func (s *scheduler) gates(t *tick, bead string, st stage.Stage) bool {
 // to launch, or nil to open one.
 func (s *scheduler) launch(ctx context.Context, t *tick, b *plan.Bead, st stage.Stage, run *ledger.Run) (bool, error) {
 	s.say(b.ID, "[%s] launch a %s session", st, st)
+	if s.holdForQuestions(b) {
+		return false, nil
+	}
 	if !s.gates(t, b.ID, st) {
 		s.say(b.ID, "  held by the gates")
 		return false, nil
