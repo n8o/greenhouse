@@ -80,6 +80,21 @@ closed locally whose close is not on main is reported on every tick. With
 no stage label, it resumes as an in-flight bead if the ledger has runs of
 it; otherwise an approved bead is parked with the reason.
 
+## Open questions hold a bead
+
+A bead whose title, "Done when" or acceptance criteria carry
+`[NEEDS CLARIFICATION: <question>]` (the marker nugit's ADR-0066 uses) is
+held: no session starts or launches its next stage, nothing is recorded, and
+no label moves. Each tick lists the questions:
+
+```
+gr-boot-9  holds: 1 open question(s) for a human; write each answer into the bead in place of its [NEEDS CLARIFICATION: …] marker
+gr-boot-9    ? CSV or JSON?
+```
+
+The answer is the release: edit the bead (`bd update`), and the next tick
+goes on. It is a hold, not a park, so the human does one thing, not two.
+
 ## Parking and unparking
 
 A parked bead (`stage:parked`) waits for a human; the reason is its last

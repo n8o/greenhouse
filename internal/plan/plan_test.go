@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -153,5 +154,20 @@ func TestBDSetStage(t *testing.T) {
 	want := "list --json --all --limit 0|label add p-1 stage:implement|label remove p-1 stage:spec"
 	if got := strings.Join(calls, "|"); got != want {
 		t.Errorf("calls %q\nwant  %q", got, want)
+	}
+}
+
+func TestOpenQuestions(t *testing.T) {
+	b := Bead{
+		Title:       "Export [NEEDS CLARIFICATION: CSV or JSON?]",
+		Description: "Done when: [NEEDS CLARIFICATION:  which\n roles ] see it. [NEEDS CLARIFICATION: CSV or JSON?]",
+		Acceptance:  "AC-1: [NEEDS CLARIFICATION:]",
+		Design:      "[NEEDS CLARIFICATION: not read here]",
+	}
+	if got, want := OpenQuestions(b), []string{"CSV or JSON?", "which roles", "(no question written)"}; !slices.Equal(got, want) {
+		t.Errorf("OpenQuestions = %q, want %q", got, want)
+	}
+	if got := OpenQuestions(Bead{Title: "plain", Description: "needs clarification, but no marker"}); got != nil {
+		t.Errorf("plain bead: %q", got)
 	}
 }

@@ -690,3 +690,38 @@ func TestTickBranchCreateFailureRetries(t *testing.T) {
 	run, _ := w.s.store.Run("p-1")
 	w.want(run != nil && len(w.records()) == 0, "the open run stays and nothing is recorded: %+v %v", run, w.records())
 }
+
+// An approved, ready bead with an open question is held, not started or
+// parked: nothing launches, nothing is recorded, no label moves. Answering
+// it in the bead is all the human does; the next tick starts it.
+func TestTickHoldsABeadWithOpenQuestions(t *testing.T) {
+	w := newWorld(t)
+	w.plan.Beads[0].Description = "Done when: exports work. [NEEDS CLARIFICATION: CSV or JSON?]"
+	w.tick()
+	w.want(w.stage("p-1") == "" && len(w.deck.Launched) == 0 && len(w.records()) == 0,
+		"held bead moved: stage %q, launches %d, records %d", w.stage("p-1"), len(w.deck.Launched), len(w.records()))
+	out := w.out.String()
+	w.want(strings.Contains(out, "holds: 1 open question(s)") && strings.Contains(out, "? CSV or JSON?"), "output:\n%s", out)
+	w.idle()
+
+	w.plan.Beads[0].Description = "Done when: exports work as CSV."
+	w.tick()
+	w.want(w.stage("p-1") == "spec" && len(w.deck.Launched) == 1, "answered bead must start, got %q", w.stage("p-1"))
+}
+
+// A question written into the bead mid-flight (by the spec stage, or a
+// human) holds the next stage's launch the same way.
+func TestTickHoldsTheNextStageOnAQuestion(t *testing.T) {
+	w := newWorld(t)
+	w.tick()
+	w.plan.Beads[0].Acceptance = "AC-1: [NEEDS CLARIFICATION: which roles?]"
+	w.deck.finish("s1", result(`{"kind":"spec-done"}`))
+	w.tick()
+	w.want(len(w.deck.Launched) == 1, "implement launched over an open question")
+	w.want(strings.Contains(w.out.String(), "? which roles?"), "output:\n%s", w.out.String())
+	w.idle()
+
+	w.plan.Beads[0].Acceptance = "AC-1: admins only"
+	w.tick()
+	w.want(w.stage("p-1") == "implement" && len(w.deck.Launched) == 2, "answered bead must launch implement, got %q", w.stage("p-1"))
+}

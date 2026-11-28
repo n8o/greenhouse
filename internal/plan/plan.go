@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -96,6 +97,30 @@ func Ready(b Bead, landed Landed) bool {
 		}
 	}
 	return true
+}
+
+// clarification is the open-question marker nugit and spec-kit share
+// (`[NEEDS CLARIFICATION: <question>]`).
+var clarification = regexp.MustCompile(`\[NEEDS CLARIFICATION:\s*([^\]]*)\]`)
+
+// OpenQuestions returns the open questions b carries in its title, "Done
+// when" or acceptance criteria, each once. A bead with any is the human's to
+// answer before a session starts on it: an unattended session can only
+// guess. A marker with no text still counts, as "(no question written)".
+func OpenQuestions(b Bead) []string {
+	var out []string
+	for _, s := range []string{b.Title, b.Description, b.Acceptance} {
+		for _, m := range clarification.FindAllStringSubmatch(s, -1) {
+			q := strings.Join(strings.Fields(m[1]), " ")
+			if q == "" {
+				q = "(no question written)"
+			}
+			if !slices.Contains(out, q) {
+				out = append(out, q)
+			}
+		}
+	}
+	return out
 }
 
 // Blockers returns the ids of the beads b is blocked by.
